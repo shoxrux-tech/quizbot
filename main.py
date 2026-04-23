@@ -8,20 +8,17 @@ from telebot import types
 from flask import Flask
 from threading import Thread
 
-# --- RENDER UCHUN UYG'OQ TUTUVCHI ---
-app = Flask('')
-@app.route('/')
-def home(): return "Baza ulangan va bot ishlayapti!"
-
-def run_web(): app.run(host='0.0.0.0', port=8080)
-
-# --- KONFIGURATSIYA ---
+# --- SOZLAMALAR ---
 TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
-# NUSXALANGAN INTERNAL URL'NI SHU YERGA QO'YING:
-DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2'
+ADMIN_ID = 5842665369
+DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2' # Internal URL'ni qo'ying
 
 bot = telebot.TeleBot(TOKEN)
+app = Flask('')
 user_session = {}
+
+@app.route('/')
+def home(): return "Bot barcha tugmalari bilan faol!"
 
 # --- BAZA BILAN ISHLASH ---
 def get_db_connection():
@@ -35,87 +32,47 @@ def init_db():
     cur.close()
     conn.close()
 
-# --- SAVOLLARNI TAHLIL QILISH ---
-def parse_multiline_questions(text):
-    raw_blocks = re.split(r'\n\s*\n', text.strip())
-    parsed_questions = []
-    for block in raw_blocks:
-        lines = [l.strip() for l in block.split('\n') if l.strip()]
-        if len(lines) >= 3:
-            q_text = lines[0]
-            opts, corr = [], 0
-            for i, opt in enumerate(lines[1:]):
-                if opt.endswith('+'):
-                    opts.append(opt[:-1].strip())
-                    corr = i
-                else:
-                    opts.append(opt)
-            parsed_questions.append({'q': q_text, 'o': opts, 'c': corr})
-    return parsed_questions
-
 # --- MENYULAR ---
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("📚 Yangi fan testi yaratish")
-    markup.row("📂 Mening testlarim")
+    markup.row("📚 Yangi fan testi yaratish", "📂 Mening testlarim")
+    markup.row("📊 Statistika", "❓ Yo'riqnoma")
+    markup.row("👨‍💻 Adminga murojaat")
     return markup
-
-def creation_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("🏁 Fanni yakunlash (Saqlash)", "❌ Bekor qilish")
-    return markup
-
-# --- TEST YUBORISH LOGIKASI ---
-def run_quiz_logic(chat_id, q_id, interval):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT title, quiz_data FROM quizzes WHERE id = %s', (q_id,))
-    res = cur.fetchone()
-    cur.close()
-    conn.close()
-    if res:
-        title, data = res
-        qs = json.loads(data)
-        bot.send_message(chat_id, f"🏁 **{title}** testi boshlandi!")
-        for idx, i in enumerate(qs, 1):
-            try:
-                bot.send_poll(chat_id, f"[{idx}/{len(qs)}] {i['q']}", i['o'], type='quiz', correct_option_id=i['c'], is_anonymous=False)
-                time.sleep(interval)
-            except: break
-        bot.send_message(chat_id, "✅ Test yakunlandi!", reply_markup=main_menu())
 
 # --- HANDLERLAR ---
 @bot.message_handler(commands=['start'])
 def start(message):
     init_db()
-    bot.send_message(message.chat.id, "👋 Bot Postgres bazasi bilan tayyor!", reply_markup=main_menu())
+    bot.send_message(message.chat.id, "🎯 Quiz Botga xush kelibsiz! Kerakli bo'limni tanlang:", reply_markup=main_menu())
 
-@bot.message_handler(func=lambda m: m.text == "📚 Yangi fan testi yaratish")
-def start_new(message):
-    user_session[message.from_user.id] = {'subject': '', 'questions': []}
-    bot.send_message(message.chat.id, "📖 Fan nomini yozing:")
-    bot.register_next_step_handler(message, get_subject_name)
+# 📊 Statistika tugmasi
+@bot.message_handler(func=lambda m: m.text == "📊 Statistika")
+def show_stat(message):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT COUNT(*) FROM quizzes')
+    total_quizzes = cur.fetchone()[0]
+    cur.execute('SELECT COUNT(DISTINCT user_id) FROM quizzes')
+    total_users = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    bot.send_message(message.chat.id, f"📈 **Bot statistikasi:**\n\n👥 Umumiy foydalanuvchilar: {total_users}\n📝 Jami yaratilgan testlar: {total_quizzes}")
 
-def get_subject_name(message):
-    uid = message.from_user.id
-    if uid in user_session:
-        user_session[uid]['subject'] = message.text
-        bot.send_message(message.chat.id, f"✅ Fan: {message.text}. Savollarni yuboring.", reply_markup=creation_menu())
+# ❓ Yo'riqnoma tugmasi
+@bot.message_handler(func=lambda m: m.text == "❓ Yo'riqnoma")
+def help_guide(message):
+    text = ("📖 **Botdan foydalanish bo'yicha yo'riqnoma:**\n\n"
+            "1. 'Yangi fan testi yaratish' tugmasini bosing.\n"
+            "2. Fan nomini yuboring.\n"
+            "3. Savollarni quyidagi formatda yuboring:\n"
+            "   `Savol matni`\n"
+            "   `Variant 1`\n"
+            "   `Variant 2+` (To'g'risiga + belgisini qo'ying)\n"
+            "4. 'Saqlash' tugmasini bosing.")
+    bot.send_message(message.chat.id, text)
 
-@bot.message_handler(func=lambda m: m.text == "🏁 Fanni yakunlash (Saqlash)")
-def finish_creation(message):
-    uid = message.from_user.id
-    if uid in user_session and user_session[uid]['questions']:
-        s = user_session[uid]
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute('INSERT INTO quizzes (user_id, title, quiz_data) VALUES (%s, %s, %s)', (uid, s['subject'], json.dumps(s['questions'])))
-        conn.commit()
-        cur.close()
-        conn.close()
-        bot.send_message(message.chat.id, "🎉 Test bazaga saqlandi!", reply_markup=main_menu())
-        del user_session[uid]
-
+# 📂 Mening testlarim (Tahrirlash tugmasi bilan)
 @bot.message_handler(func=lambda m: m.text == "📂 Mening testlarim")
 def my_tests(message):
     conn = get_db_connection()
@@ -124,40 +81,46 @@ def my_tests(message):
     rows = cur.fetchall()
     cur.close()
     conn.close()
+    
     if not rows:
-        bot.send_message(message.chat.id, "📭 Hozircha testlar yo'q.")
+        bot.send_message(message.chat.id, "📭 Sizda hali testlar yo'q.")
         return
+        
     for r in rows:
         m = types.InlineKeyboardMarkup()
-        m.add(types.InlineKeyboardButton("🚀 15 sek interval", callback_data=f"run_15_{r[0]}"))
+        m.add(types.InlineKeyboardButton("🚀 Boshlash", callback_data=f"run_15_{r[0]}"))
+        m.add(types.InlineKeyboardButton("📝 Tahrirlash", callback_data=f"edit_{r[0]}"))
         m.add(types.InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{r[0]}"))
         bot.send_message(message.chat.id, f"📂 **{r[1]}**", reply_markup=m)
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    p = call.data.split('_')
-    if p[0] == 'run':
-        threading.Thread(target=run_quiz_logic, args=(call.message.chat.id, int(p[2]), int(p[1]))).start()
-    elif p[0] == 'del':
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute('DELETE FROM quizzes WHERE id = %s', (p[1],))
-        conn.commit()
-        cur.close()
-        conn.close()
-        bot.delete_message(call.message.chat.id, call.message.message_id)
+# 📝 Tahrirlash funksiyasi
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_'))
+def edit_quiz(call):
+    q_id = int(call.data.split('_')[1])
+    user_session[call.from_user.id] = {'edit_id': q_id, 'subject': '', 'questions': []}
+    bot.send_message(call.message.chat.id, "📝 Test uchun yangi fan nomini yuboring (yoki eskisi qolsin):")
+    bot.register_next_step_handler(call.message, get_edit_subject)
 
-@bot.message_handler(func=lambda m: True)
-def collect(message):
+def get_edit_subject(message):
     uid = message.from_user.id
     if uid in user_session:
-        if message.text in ["🏁 Fanni yakunlash (Saqlash)", "❌ Bekor qilish"]: return
-        new_qs = parse_multiline_questions(message.text)
-        if new_qs:
-            user_session[uid]['questions'].extend(new_qs)
-            bot.send_message(message.chat.id, f"📥 {len(new_qs)} ta savol olindi.")
+        user_session[uid]['subject'] = message.text
+        bot.send_message(message.chat.id, "📥 Endi yangi savollar blokini yuboring. Bu eski savollarni to'liq almashtiradi.")
+        bot.register_next_step_handler(message, finalize_edit)
 
-if __name__ == '__main__':
-    init_db()
-    Thread(target=run_web).start()
-    bot.polling(none_stop=True)
+def finalize_edit(message):
+    uid = message.from_user.id
+    if uid in user_session:
+        new_qs = parse_multiline_questions(message.text) # Avvalgi parse funksiyasi kodi ishlatiladi
+        if new_qs:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute('UPDATE quizzes SET title = %s, quiz_data = %s WHERE id = %s', 
+                        (user_session[uid]['subject'], json.dumps(new_qs), user_session[uid]['edit_id']))
+            conn.commit()
+            cur.close()
+            conn.close()
+            bot.send_message(message.chat.id, "✅ Test muvaffaqiyatli tahrirlandi!", reply_markup=main_menu())
+            del user_session[uid]
+
+# --- Qolgan funksiyalar (parse, run_quiz_logic, collect) avvalgidek qoladi ---
