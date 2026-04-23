@@ -11,15 +11,18 @@ from threading import Thread
 # --- SOZLAMALAR ---
 TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
 ADMIN_ID = 5842665369
-# Render bazangiz manzili
+# Render bazangiz manzili yangilandi
 DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2'
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask('')
+
+# Foydalanuvchi sessiyalari va test natijalari
 user_session = {}
+quiz_results = {} # {chat_id: {poll_id: correct_option, 'scores': {user_id: {'name': name, 'count': 0}}}}
 
 @app.route('/')
-def home(): return "Bot barcha funksiyalari (Guruh va Inline Share bilan) faol!"
+def home(): return "Bot barcha funksiyalari (Leaderboard bilan) faol!"
 
 # --- BAZA BILAN ISHLASH ---
 def get_db_connection():
@@ -50,6 +53,20 @@ def parse_multiline_questions(text):
             parsed_questions.append({'q': q_text, 'o': opts, 'c': corr})
     return parsed_questions
 
+# --- NATIJALARNI HISOBLASH ---
+@bot.poll_answer_handler()
+def handle_poll_answer(pollAnswer):
+    for chat_id in list(quiz_results.keys()):
+        if pollAnswer.poll_id in quiz_results[chat_id]:
+            correct_id = quiz_results[chat_id][pollAnswer.poll_id]
+            # Agar javob to'g'ri bo'lsa ball qo'shish
+            if pollAnswer.option_ids[0] == correct_id:
+                uid = pollAnswer.user.id
+                uname = pollAnswer.user.first_name
+                if uid not in quiz_results[chat_id]['scores']:
+                    quiz_results[chat_id]['scores'][uid] = {'name': uname, 'count': 0}
+                quiz_results[chat_id]['scores'][uid]['count'] += 1
+
 # --- MENYULAR ---
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -65,23 +82,55 @@ def run_quiz_logic(chat_id, q_id, interval):
     res = cur.fetchone()
     cur.close()
     conn.close()
+    
     if res:
         title, data = res
         qs = json.loads(data)
+        
+        # Test natijalarini tozalash va tayyorlash
+        quiz_results[chat_id] = {'scores': {}}
+        
         bot.send_message(chat_id, f"🏁 **{title}** testi boshlandi! Savollar soni: {len(qs)}")
+        
         for idx, i in enumerate(qs, 1):
             try:
-                bot.send_poll(chat_id, f"[{idx}/{len(qs)}] {i['q']}", i['o'], type='quiz', correct_option_id=i['c'], is_anonymous=False)
+                poll = bot.send_poll(
+                    chat_id, 
+                    f"[{idx}/{len(qs)}] {i['q']}", 
+                    i['o'], 
+                    type='quiz', 
+                    correct_option_id=i['c'], 
+                    is_anonymous=False
+                )
+                # Har bir poll ID sini to'g'ri javob bilan saqlab qo'yamiz
+                quiz_results[chat_id][poll.poll.id] = i['c']
                 time.sleep(interval)
             except: break
-        bot.send_message(chat_id, "✅ Test yakunlandi!", reply_markup=main_menu())
+        
+        # --- NATIJALARNI CHIQARISH (Leaderboard) ---
+        scores = quiz_results[chat_id]['scores']
+        result_msg = f"🏁 **“{title}” testi yakunlandi!**\n\n"
+        
+        if scores:
+            # Ballar bo'yicha saralash
+            sorted_players = sorted(scores.values(), key=lambda x: x['count'], reverse=True)
+            result_msg += f"📊 **Natijalar:**\n\n"
+            for index, player in enumerate(sorted_players, 1):
+                medal = "🥇" if index == 1 else "🥈" if index == 2 else "🥉" if index == 3 else f"{index}."
+                result_msg += f"{medal} {player['name']} – **{player['count']} ta** to'g'ri javob\n"
+        else:
+            result_msg += "😕 Afsuski, hech kim testda qatnashmadi."
+            
+        bot.send_message(chat_id, result_msg, reply_markup=main_menu())
+        
+        # Xotirani tozalash
+        if chat_id in quiz_results:
+            del quiz_results[chat_id]
 
 # --- HANDLERLAR ---
 @bot.message_handler(commands=['start'])
 def start(message):
     init_db()
-    
-    # Guruhda yoki lichkada testni boshlash parametrini tekshirish
     parts = message.text.split()
     if len(parts) > 1 and parts[1].startswith('run_'):
         try:
@@ -92,7 +141,6 @@ def start(message):
             bot.reply_to(message, "⚠️ Testni yuklashda xatolik.")
             return
             
-    # Oddiy start bo'lsa (faqat shaxsiy chatda menyu chiqadi)
     if message.chat.type == 'private':
         bot.send_message(message.chat.id, "🎯 Quiz Botga xush kelibsiz!", reply_markup=main_menu())
 
@@ -149,7 +197,6 @@ def my_tests(message):
         caption = f"🎲 “{title}” testi\n\n✒️ {q_count} ta savol  ·  ⏱ 15 soniya"
         bot.send_message(message.chat.id, caption, reply_markup=m)
 
-# --- INLINE QUERY HANDLER ---
 @bot.inline_handler(lambda query: query.query.startswith("quiz_"))
 def inline_share(inline_query):
     try:
