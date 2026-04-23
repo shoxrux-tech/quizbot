@@ -11,6 +11,7 @@ from threading import Thread
 # --- SOZLAMALAR ---
 TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
 ADMIN_ID = 5842665369
+# Render bazangiz manzili
 DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2'
 
 bot = telebot.TeleBot(TOKEN)
@@ -18,7 +19,7 @@ app = Flask('')
 user_session = {}
 
 @app.route('/')
-def home(): return "Bot barcha funksiyalari (Inline Share bilan) faol!"
+def home(): return "Bot barcha funksiyalari (Guruh va Inline Share bilan) faol!"
 
 # --- BAZA BILAN ISHLASH ---
 def get_db_connection():
@@ -79,11 +80,21 @@ def run_quiz_logic(chat_id, q_id, interval):
 @bot.message_handler(commands=['start'])
 def start(message):
     init_db()
-    if len(message.text.split()) > 1 and message.text.split()[1].startswith('run_'):
-        q_id = int(message.text.split('_')[1])
-        threading.Thread(target=run_quiz_logic, args=(message.chat.id, q_id, 15)).start()
-        return
-    bot.send_message(message.chat.id, "🎯 Quiz Botga xush kelibsiz!", reply_markup=main_menu())
+    
+    # Guruhda yoki lichkada testni boshlash parametrini tekshirish
+    parts = message.text.split()
+    if len(parts) > 1 and parts[1].startswith('run_'):
+        try:
+            q_id = int(parts[1].split('_')[1])
+            threading.Thread(target=run_quiz_logic, args=(message.chat.id, q_id, 15)).start()
+            return
+        except:
+            bot.reply_to(message, "⚠️ Testni yuklashda xatolik.")
+            return
+            
+    # Oddiy start bo'lsa (faqat shaxsiy chatda menyu chiqadi)
+    if message.chat.type == 'private':
+        bot.send_message(message.chat.id, "🎯 Quiz Botga xush kelibsiz!", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📊 Statistika")
 def show_stat(message):
@@ -208,9 +219,6 @@ def collect(message):
         
         new_qs = parse_multiline_questions(message.text)
         if new_qs:
-            if uid != ADMIN_ID and len(new_qs) > 1:
-                bot.send_message(message.chat.id, "⚠️ Iltimos, savollarni bittalab yuboring!")
-                return
             user_session[uid]['questions'].extend(new_qs)
             bot.send_message(message.chat.id, f"📥 {len(new_qs)} ta savol olindi.")
 
