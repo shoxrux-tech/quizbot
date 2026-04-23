@@ -10,19 +10,16 @@ from threading import Thread
 
 # --- SOZLAMALAR ---
 TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
-ADMIN_ID = 5842665369
-# Render bazangiz manzili
 DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2'
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask('')
 
-# Foydalanuvchi sessiyalari va natijalarni hisoblash uchun kengaytirilgan lug'at
 user_session = {}
-quiz_results = {} # {chat_id: {poll_id: correct_option, 'scores': {user_id: {'name': name, 'count': 0, 'start': time, 'last': time}}}}
+quiz_results = {} 
 
 @app.route('/')
-def home(): return "Bot barcha funksiyalari (Leaderboard va StopPoll bilan) faol!"
+def home(): return "Bot barcha funksiyalari (Leaderboard va Inline) faol!"
 
 # --- BAZA BILAN ISHLASH ---
 def get_db_connection():
@@ -53,7 +50,7 @@ def parse_multiline_questions(text):
             parsed_questions.append({'q': q_text, 'o': opts, 'c': corr})
     return parsed_questions
 
-# --- NATIJALARNI HISOBLASH (Real vaqtda) ---
+# --- NATIJALARNI HISOBLASH ---
 @bot.poll_answer_handler()
 def handle_poll_answer(pollAnswer):
     for chat_id in list(quiz_results.keys()):
@@ -62,10 +59,8 @@ def handle_poll_answer(pollAnswer):
             if pollAnswer.option_ids[0] == correct_id:
                 uid = pollAnswer.user.id
                 uname = pollAnswer.user.first_name
-                
                 if uid not in quiz_results[chat_id]['scores']:
                     quiz_results[chat_id]['scores'][uid] = {'name': uname, 'count': 0, 'start': time.time()}
-                
                 quiz_results[chat_id]['scores'][uid]['count'] += 1
                 quiz_results[chat_id]['scores'][uid]['last'] = time.time()
 
@@ -88,13 +83,11 @@ def run_quiz_logic(chat_id, q_id, interval):
     if res:
         title, data = res
         qs = json.loads(data)
-        
         quiz_results[chat_id] = {'scores': {}}
-        bot.send_message(chat_id, f"🏁 **{title}** testi boshlandi! Savollar soni: {len(qs)}")
+        bot.send_message(chat_id, f"🏁 **“{title}”** testi boshlandi!\nSavollar soni: {len(qs)}")
         
         for idx, i in enumerate(qs, 1):
             try:
-                # Savolni yuborish
                 poll = bot.send_poll(
                     chat_id, 
                     f"[{idx}/{len(qs)}] {i['q']}", 
@@ -104,40 +97,26 @@ def run_quiz_logic(chat_id, q_id, interval):
                     is_anonymous=False
                 )
                 quiz_results[chat_id][poll.poll.id] = i['c']
-                
-                # Belgilangan vaqtni kutish (15 soniya)
                 time.sleep(interval)
-                
-                # VAQT TUGADI: Savolni yopish (variantlarni bosib bo'lmaydi)
-                bot.stop_poll(chat_id, poll.message_id)
-                
+                bot.stop_poll(chat_id, poll.message_id) # Vaqt tugagach savolni yopish
             except: break
         
-        # --- NATIJALAR JADVALI (Leaderboard) ---
+        # Leaderboard (Natijalar jadvali)
         scores = quiz_results[chat_id]['scores']
         result_msg = f"🏁 **“{title}” testi yakunlandi!**\n\n"
-        result_msg += f"*{len(qs)} ta savolga javob berildi*\n\n"
-        
         if scores:
-            # To'g'ri javob soni bo'yicha saralash
             sorted_players = sorted(scores.values(), key=lambda x: x['count'], reverse=True)
             result_msg += f"📊 **Natijalar:**\n\n"
             for index, player in enumerate(sorted_players, 1):
                 medal = "🥇" if index == 1 else "🥈" if index == 2 else "🥉" if index == 3 else f"{index}."
-                
-                # Sarflangan vaqtni hisoblash
-                duration = int(player['last'] - player['start'])
-                m, s = divmod(duration, 60)
-                time_str = f"({m} daqiqa {s} soniya)" if m > 0 else f"({s} soniya)"
-                
-                result_msg += f"{medal} {player['name']} – **{player['count']} ta** {time_str}\n"
+                duration = int(player.get('last', 0) - player.get('start', 0))
+                result_msg += f"{medal} {player['name']} – **{player['count']} ta** ({duration} soniya)\n"
             result_msg += "\n🏆 G'oliblarni tabriklaymiz!"
         else:
-            result_msg += "😕 Afsuski, hech kim testda qatnashmadi."
-            
+            result_msg += "😕 Hech kim qatnashmadi."
+        
         bot.send_message(chat_id, result_msg, reply_markup=main_menu())
-        if chat_id in quiz_results:
-            del quiz_results[chat_id]
+        if chat_id in quiz_results: del quiz_results[chat_id]
 
 # --- HANDLERLAR ---
 @bot.message_handler(commands=['start'])
@@ -145,14 +124,9 @@ def start(message):
     init_db()
     parts = message.text.split()
     if len(parts) > 1 and parts[1].startswith('run_'):
-        try:
-            q_id = int(parts[1].split('_')[1])
-            threading.Thread(target=run_quiz_logic, args=(message.chat.id, q_id, 15)).start()
-            return
-        except:
-            bot.reply_to(message, "⚠️ Testni yuklashda xatolik.")
-            return
-            
+        q_id = int(parts[1].split('_')[1])
+        threading.Thread(target=run_quiz_logic, args=(message.chat.id, q_id, 15)).start()
+        return
     if message.chat.type == 'private':
         bot.send_message(message.chat.id, "🎯 Quiz Botga xush kelibsiz!", reply_markup=main_menu())
 
@@ -174,36 +148,35 @@ def my_tests(message):
         q_count = len(json.loads(data))
         m = types.InlineKeyboardMarkup()
         m.add(types.InlineKeyboardButton("🚀 Shaxsiyda boshlash", callback_data=f"run_15_{q_id}"))
-        m.add(types.InlineKeyboardButton("👥 Guruhda boshlash", url=f"https://t.me/{bot.get_me().username}?startgroup=run_{q_id}"))
-        m.add(types.InlineKeyboardButton("🔗 Testni ulashish", switch_inline_query=f"quiz_{q_id}"))
+        m.add(types.InlineKeyboardButton("👥 Guruhga ulashish", url=f"https://t.me/{bot.get_me().username}?startgroup=run_{q_id}"))
+        m.add(types.InlineKeyboardButton("🔗 Testni ulashish (Inline)", switch_inline_query=f"quiz_{q_id}"))
         m.add(types.InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{q_id}"))
-        
-        caption = f"🎲 “{title}” testi\n\n✒️ {q_count} ta savol"
-        bot.send_message(message.chat.id, caption, reply_markup=m)
+        bot.send_message(message.chat.id, f"🎲 “{title}” testi\n✒️ {q_count} ta savol", reply_markup=m)
 
-# (Qolgan handlerlar o'zgarishsiz qoladi...)
-@bot.message_handler(func=lambda m: m.text == "📊 Statistika")
-def show_stat(message):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT COUNT(*) FROM quizzes')
-    total = cur.fetchone()[0]
-    cur.close()
-    conn.close()
-    bot.send_message(message.chat.id, f"📈 **Statistika:** Jami {total} ta test yaratilgan.")
-
-@bot.message_handler(func=lambda m: m.text == "📚 Yangi fan testi yaratish")
-def start_new(message):
-    user_session[message.from_user.id] = {'subject': '', 'questions': []}
-    bot.send_message(message.chat.id, "📖 **Fan nomini kiriting:**", reply_markup=types.ReplyKeyboardRemove())
-    bot.register_next_step_handler(message, get_subject_name)
-
-def get_subject_name(message):
-    uid = message.from_user.id
-    if uid in user_session:
-        user_session[uid]['subject'] = message.text
-        bot.send_message(message.chat.id, f"✅ Fan: **{message.text}**\nSavollarni yuboring.", 
-                         reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("🏁 Saqlash", "❌ Bekor qilish"))
+# --- INLINE ULASHISH ---
+@bot.inline_handler(lambda query: query.query.startswith("quiz_"))
+def inline_share(inline_query):
+    try:
+        q_id = int(inline_query.query.split("_")[1])
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('SELECT title, quiz_data FROM quizzes WHERE id = %s', (q_id,))
+        res = cur.fetchone()
+        cur.close()
+        conn.close()
+        if res:
+            title, data = res
+            r = types.InlineQueryResultArticle(
+                id=str(q_id),
+                title=f"🎲 {title}",
+                description=f"{len(json.loads(data))} ta savolni ulashish",
+                input_message_content=types.InputTextMessageContent(f"🎲 **“{title}” testi**\n\nBoshlash uchun pastdagi tugmani bosing 👇"),
+                reply_markup=types.InlineKeyboardMarkup().add(
+                    types.InlineKeyboardButton("🚀 Testni boshlash", url=f"https://t.me/{bot.get_me().username}?startgroup=run_{q_id}")
+                )
+            )
+            bot.answer_inline_query(inline_query.id, [r], cache_time=1)
+    except: pass
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -220,6 +193,19 @@ def callback_handler(call):
         conn.close()
         bot.delete_message(call.message.chat.id, call.message.message_id)
 
+@bot.message_handler(func=lambda m: m.text == "📚 Yangi fan testi yaratish")
+def start_new(message):
+    user_session[message.from_user.id] = {'subject': '', 'questions': []}
+    bot.send_message(message.chat.id, "📖 **Fan nomini kiriting:**", reply_markup=types.ReplyKeyboardRemove())
+    bot.register_next_step_handler(message, get_subject_name)
+
+def get_subject_name(message):
+    uid = message.from_user.id
+    if uid in user_session:
+        user_session[uid]['subject'] = message.text
+        bot.send_message(message.chat.id, f"✅ Fan: **{message.text}**\nSavollarni yuboring.", 
+                         reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("🏁 Saqlash", "❌ Bekor qilish"))
+
 @bot.message_handler(func=lambda m: True)
 def collect(message):
     uid = message.from_user.id
@@ -235,12 +221,11 @@ def collect(message):
             conn.close()
             bot.send_message(message.chat.id, "🎉 Test saqlandi!", reply_markup=main_menu())
             del user_session[uid]
-            return
-        
-        new_qs = parse_multiline_questions(message.text)
-        if new_qs:
-            user_session[uid]['questions'].extend(new_qs)
-            bot.send_message(message.chat.id, f"📥 {len(new_qs)} ta savol olindi.")
+        elif message.text != "❌ Bekor qilish":
+            new_qs = parse_multiline_questions(message.text)
+            if new_qs:
+                user_session[uid]['questions'].extend(new_qs)
+                bot.send_message(message.chat.id, f"📥 {len(new_qs)} ta savol olindi.")
 
 if __name__ == '__main__':
     init_db()
