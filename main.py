@@ -11,14 +11,14 @@ from threading import Thread
 # --- SOZLAMALAR ---
 TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
 ADMIN_ID = 5842665369
-DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2' # Internal URL'ni qo'ying
+DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2'
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask('')
 user_session = {}
 
 @app.route('/')
-def home(): return "Bot barcha funksiyalari bilan faol!"
+def home(): return "Bot barcha funksiyalari (Inline Share bilan) faol!"
 
 # --- BAZA BILAN ISHLASH ---
 def get_db_connection():
@@ -79,12 +79,10 @@ def run_quiz_logic(chat_id, q_id, interval):
 @bot.message_handler(commands=['start'])
 def start(message):
     init_db()
-    # Agar guruhda /start run_ID shaklida kelsa
     if len(message.text.split()) > 1 and message.text.split()[1].startswith('run_'):
         q_id = int(message.text.split('_')[1])
         threading.Thread(target=run_quiz_logic, args=(message.chat.id, q_id, 15)).start()
         return
-    
     bot.send_message(message.chat.id, "🎯 Quiz Botga xush kelibsiz!", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📊 Statistika")
@@ -111,7 +109,7 @@ def get_subject_name(message):
     uid = message.from_user.id
     if uid in user_session:
         user_session[uid]['subject'] = message.text
-        bot.send_message(message.chat.id, f"✅ Fan: **{message.text}**\nEndi savollarni yuboring.", 
+        bot.send_message(message.chat.id, f"✅ Fan: **{message.text}**\nSavollarni yuboring.", 
                          reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("🏁 Saqlash", "❌ Bekor qilish"))
 
 @bot.message_handler(func=lambda m: m.text == "📂 Mening testlarim")
@@ -133,11 +131,41 @@ def my_tests(message):
         m = types.InlineKeyboardMarkup()
         m.add(types.InlineKeyboardButton("🚀 Bu testni boshlash", callback_data=f"run_15_{q_id}"))
         m.add(types.InlineKeyboardButton("👥 Guruhda testni boshlash", url=f"https://t.me/{bot.get_me().username}?startgroup=run_{q_id}"))
-        m.add(types.InlineKeyboardButton("📝 Tahrirlash", callback_data=f"edit_{q_id}"))
-        m.add(types.InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{q_id}"))
+        m.add(types.InlineKeyboardButton("🔗 Testni ulashish", switch_inline_query=f"quiz_{q_id}"))
+        m.add(types.InlineKeyboardButton("📝 Tahrirlash", callback_data=f"edit_{q_id}"),
+              types.InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{q_id}"))
         
         caption = f"🎲 “{title}” testi\n\n✒️ {q_count} ta savol  ·  ⏱ 15 soniya"
         bot.send_message(message.chat.id, caption, reply_markup=m)
+
+# --- INLINE QUERY HANDLER ---
+@bot.inline_handler(lambda query: query.query.startswith("quiz_"))
+def inline_share(inline_query):
+    try:
+        q_id = int(inline_query.query.split("_")[1])
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('SELECT title, quiz_data FROM quizzes WHERE id = %s', (q_id,))
+        res = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if res:
+            title, data = res
+            q_count = len(json.loads(data))
+            r = types.InlineQueryResultArticle(
+                id=str(q_id),
+                title=f"🎲 {title}",
+                description=f"{q_count} ta savollik testni ulashish",
+                input_message_content=types.InputTextMessageContent(
+                    message_text=f"🎲 **“{title}” testi**\n\n✒️ {q_count} ta savol mavjud.\n\nTestni boshlash uchun pastdagi tugmani bosing 👇"
+                ),
+                reply_markup=types.InlineKeyboardMarkup().add(
+                    types.InlineKeyboardButton("🚀 Testni boshlash", url=f"https://t.me/{bot.get_me().username}?startgroup=run_{q_id}")
+                )
+            )
+            bot.answer_inline_query(inline_query.id, [r])
+    except: pass
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -156,7 +184,7 @@ def callback_handler(call):
     elif p[0] == 'edit':
         user_session[call.from_user.id] = {'edit_id': int(p[1]), 'subject': '', 'questions': []}
         bot.send_message(call.message.chat.id, "📝 Yangi fan nomini yozing:")
-        bot.register_next_step_handler(call.message, get_subject_name) # Qayta ishlatamiz
+        bot.register_next_step_handler(call.message, get_subject_name)
 
 @bot.message_handler(func=lambda m: True)
 def collect(message):
@@ -167,7 +195,6 @@ def collect(message):
             if not s['questions']: return
             conn = get_db_connection()
             cur = conn.cursor()
-            # Agar tahrirlash bo'lsa UPDATE, yangi bo'lsa INSERT
             if 'edit_id' in s:
                 cur.execute('UPDATE quizzes SET title = %s, quiz_data = %s WHERE id = %s', (s['subject'], json.dumps(s['questions']), s['edit_id']))
             else:
