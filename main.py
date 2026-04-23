@@ -4,12 +4,11 @@ import json
 import time
 import threading
 import re
-import os
 from telebot import types
 from flask import Flask
 from threading import Thread
 
-# --- RENDER SOZLAMALARI ---
+# --- RENDER UCHUN UYG'OQ TUTUVCHI ---
 app = Flask('')
 @app.route('/')
 def home(): return "Baza ulangan va bot ishlayapti!"
@@ -18,21 +17,20 @@ def run_web(): app.run(host='0.0.0.0', port=8080)
 
 # --- KONFIGURATSIYA ---
 TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
-# SHU YERGA O'ZINGIZNING INTERNAL DATABASE URL MANZILINGIZNI QO'YING:
+# NUSXALANGAN INTERNAL URL'NI SHU YERGA QO'YING:
 DATABASE_URL = 'postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2'
 
 bot = telebot.TeleBot(TOKEN)
 user_session = {}
 
-# --- POSTGRES BAZA BILAN ISHLASH ---
+# --- BAZA BILAN ISHLASH ---
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute('''CREATE TABLE IF NOT EXISTS quizzes 
-                   (id SERIAL PRIMARY KEY, user_id BIGINT, title TEXT, quiz_data TEXT)''')
+    cur.execute('CREATE TABLE IF NOT EXISTS quizzes (id SERIAL PRIMARY KEY, user_id BIGINT, title TEXT, quiz_data TEXT)')
     conn.commit()
     cur.close()
     conn.close()
@@ -67,7 +65,7 @@ def creation_menu():
     markup.add("🏁 Fanni yakunlash (Saqlash)", "❌ Bekor qilish")
     return markup
 
-# --- TEST YUBORISH ---
+# --- TEST YUBORISH LOGIKASI ---
 def run_quiz_logic(chat_id, q_id, interval):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -75,15 +73,13 @@ def run_quiz_logic(chat_id, q_id, interval):
     res = cur.fetchone()
     cur.close()
     conn.close()
-    
     if res:
         title, data = res
         qs = json.loads(data)
         bot.send_message(chat_id, f"🏁 **{title}** testi boshlandi!")
         for idx, i in enumerate(qs, 1):
             try:
-                bot.send_poll(chat_id, f"[{idx}/{len(qs)}] {i['q']}", i['o'], 
-                             type='quiz', correct_option_id=i['c'], is_anonymous=False)
+                bot.send_poll(chat_id, f"[{idx}/{len(qs)}] {i['q']}", i['o'], type='quiz', correct_option_id=i['c'], is_anonymous=False)
                 time.sleep(interval)
             except: break
         bot.send_message(chat_id, "✅ Test yakunlandi!", reply_markup=main_menu())
@@ -92,7 +88,7 @@ def run_quiz_logic(chat_id, q_id, interval):
 @bot.message_handler(commands=['start'])
 def start(message):
     init_db()
-    bot.send_message(message.chat.id, "👋 Bot Render Postgres bazasi bilan tayyor!", reply_markup=main_menu())
+    bot.send_message(message.chat.id, "👋 Bot Postgres bazasi bilan tayyor!", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📚 Yangi fan testi yaratish")
 def start_new(message):
@@ -113,12 +109,11 @@ def finish_creation(message):
         s = user_session[uid]
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute('INSERT INTO quizzes (user_id, title, quiz_data) VALUES (%s, %s, %s)', 
-                    (uid, s['subject'], json.dumps(s['questions'])))
+        cur.execute('INSERT INTO quizzes (user_id, title, quiz_data) VALUES (%s, %s, %s)', (uid, s['subject'], json.dumps(s['questions'])))
         conn.commit()
         cur.close()
         conn.close()
-        bot.send_message(message.chat.id, "🎉 Test bazaga abadiy saqlandi!", reply_markup=main_menu())
+        bot.send_message(message.chat.id, "🎉 Test bazaga saqlandi!", reply_markup=main_menu())
         del user_session[uid]
 
 @bot.message_handler(func=lambda m: m.text == "📂 Mening testlarim")
@@ -129,25 +124,24 @@ def my_tests(message):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    
     if not rows:
-        bot.send_message(message.chat.id, "📭 Testlar yo'q.")
+        bot.send_message(message.chat.id, "📭 Hozircha testlar yo'q.")
         return
     for r in rows:
         m = types.InlineKeyboardMarkup()
         m.add(types.InlineKeyboardButton("🚀 15 sek interval", callback_data=f"run_15_{r[0]}"))
         m.add(types.InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{r[0]}"))
-        bot.send_message(message.chat.id, f"📂 {r[1]}", reply_markup=m)
+        bot.send_message(message.chat.id, f"📂 **{r[1]}**", reply_markup=m)
 
 @bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    parts = call.data.split('_')
-    if parts[0] == 'run':
-        threading.Thread(target=run_quiz_logic, args=(call.message.chat.id, int(parts[2]), int(parts[1]))).start()
-    elif parts[0] == 'del':
+def callback_handler(call):
+    p = call.data.split('_')
+    if p[0] == 'run':
+        threading.Thread(target=run_quiz_logic, args=(call.message.chat.id, int(p[2]), int(p[1]))).start()
+    elif p[0] == 'del':
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute('DELETE FROM quizzes WHERE id = %s', (parts[1],))
+        cur.execute('DELETE FROM quizzes WHERE id = %s', (p[1],))
         conn.commit()
         cur.close()
         conn.close()
@@ -157,6 +151,7 @@ def callback(call):
 def collect(message):
     uid = message.from_user.id
     if uid in user_session:
+        if message.text in ["🏁 Fanni yakunlash (Saqlash)", "❌ Bekor qilish"]: return
         new_qs = parse_multiline_questions(message.text)
         if new_qs:
             user_session[uid]['questions'].extend(new_qs)
