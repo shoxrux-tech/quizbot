@@ -1,0 +1,76 @@
+import telebot
+import sqlite3
+import json
+import time
+import threading
+import re
+from telebot import types
+from flask import Flask
+from threading import Thread
+
+# --- DIQQAT: BotFather'dan yangi token olib shu yerga qo'ying! ---
+TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs' 
+bot = telebot.TeleBot(TOKEN)
+
+# Render uchun uyg'oq tutish tizimi (Flask)
+app = Flask('')
+@app.route('/')
+def home(): return "Bot ishlayapti!"
+def run_web(): app.run(host='0.0.0.0', port=8080)
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
+# --- BAZA ---
+def init_db():
+    conn = sqlite3.connect('quiz_bot.db')
+    conn.execute('CREATE TABLE IF NOT EXISTS quizzes (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, title TEXT, quiz_data TEXT)')
+    conn.commit()
+    conn.close()
+
+# --- VARIANTLARNI TAHLIL QILISH (+ belgisi bilan) ---
+def parse_multiline_questions(text):
+    raw_blocks = re.split(r'\n\s*\n', text.strip())
+    parsed_questions = []
+    for block in raw_blocks:
+        lines = [l.strip() for l in block.split('\n') if l.strip()]
+        if len(lines) >= 3:
+            q_text = lines[0]
+            opts, corr = [], 0
+            for i, opt in enumerate(lines[1:]):
+                if opt.endswith('+'):
+                    opts.append(opt[:-1].strip())
+                    corr = i
+                else: opts.append(opt)
+            parsed_questions.append({'q': q_text, 'o': opts, 'c': corr})
+    return parsed_questions
+
+# --- TUGMALAR ---
+def main_menu():
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    m.row("📚 Yangi fan testi yaratish")
+    m.row("📂 Mening testlarim")
+    return m
+
+def creation_menu():
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    m.add("📦 Blokni yopish")
+    m.add("🏁 Fanni yakunlash (Saqlash)")
+    m.add("❌ Bekor qilish")
+    return m
+
+# --- HANDLERLAR ---
+@bot.message_handler(commands=['start'])
+def start(message):
+    init_db()
+    bot.send_message(message.chat.id, "👋 Bot Render-da tayyor!", reply_markup=main_menu())
+
+@bot.message_handler(func=lambda m: m.text == "📚 Yangi fan testi yaratish")
+def start_new(message):
+    bot.send_message(message.chat.id, "📖 **Fan nomini yozing:**", reply_markup=types.ReplyKeyboardRemove())
+    # Bu yerda mantiq davom etadi...
+
+if __name__ == "__main__":
+    init_db()
+    keep_alive() # Render uchun
+    bot.polling(none_stop=True)
