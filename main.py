@@ -6,11 +6,9 @@ import time
 from telebot import types
 
 # --- SOZLAMALAR ---
-# Render Environment Variables bo'limidan olingan qiymatlar
-TOKEN = os.getenv("8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs")
-ADMIN_ID_RAW = os.getenv("ADMIN_ID", "5842665369") # Standart ID qo'shildi
-DATABASE_URL = os.getenv("postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a.ohio-postgres.render.com/quizdb_wgm2")
-
+TOKEN = os.getenv("TOKEN")
+ADMIN_ID_RAW = os.getenv("ADMIN_ID", "5842665369")
+DATABASE_URL = os.getenv("DATABASE_URL")
 # ADMIN_ID ni raqamga o'tkazishda xatolikni oldini olish
 try:
     ADMIN_ID = int(ADMIN_ID_RAW)
