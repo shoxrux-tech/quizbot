@@ -11,7 +11,7 @@ from flask import Flask, request
 TOKEN = os.getenv("8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs")
 ADMIN_ID = int(os.getenv("5842665369"))
 DATABASE_URL = os.getenv("postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a.ohio-postgres.render.com/quizdb_wgm2")
-WEBHOOK_URL = os.getenv("https://quizbot-1-fvab.onrender.com")
+WEBHOOK_URL = os.getenv("https://quizbot-1-eeuf.onrender.com")
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
