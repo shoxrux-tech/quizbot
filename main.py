@@ -10,7 +10,7 @@ from threading import Timer
 TOKEN = os.getenv("8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs")
 ADMIN_ID = int(os.getenv("5842665369"))
 DATABASE_URL = os.getenv("postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a/quizdb_wgm2")
-WEBHOOK_URL = os.getenv("https://quizbot-11qd.onrender.com") 
+WEBHOOK_URL = os.getenv("https://quizbot-1-fvab.onrender.com") 
 
 bot = telebot.TeleBot(TOKEN, parse_mode="Markdown")
 app = Flask(__name__)
