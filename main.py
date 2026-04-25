@@ -5,44 +5,52 @@ import json
 import time
 from telebot import types
 
-# --- SOZLAMALAR (Render Environment Variables'dan oladi) ---
+# --- SOZLAMALAR ---
 TOKEN = os.getenv("8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs")
 ADMIN_ID = int(os.getenv("5842665369"))
 DATABASE_URL = os.getenv("postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a.ohio-postgres.render.com/quizdb_wgm2")
 
-# Postgres URL formatini to'g'irlash (Render uchun shart)
+# Render uchun bazaga ulanish manzilini to'g'irlash
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
 
 bot = telebot.TeleBot(TOKEN)
 
-# Vaqtinchalik ma'lumotlar
+# Vaqtinchalik ma'lumotlar saqlash uchun
 user_session = {}
 active_quizzes = {}
 
 def get_db():
+    """Ma'lumotlar bazasiga ulanish"""
     return psycopg2.connect(DATABASE_URL)
 
-# --- ASOSIY MENYU ---
+# --- BOT BUYRUQLARI ---
 @bot.message_handler(commands=['start'])
 def start(msg):
-    # Agar foydalanuvchi link orqali testga kirsa
+    # Testni havola orqali boshlash (run_ID)
     args = msg.text.split()
     if len(args) > 1 and args[1].startswith("run_"):
-        return start_quiz_engine(msg.chat.id, args[1].replace("run_", ""))
+        quiz_id = args[1].replace("run_", "")
+        return start_quiz_engine(msg.chat.id, quiz_id)
     
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📚 Yangi fan testi yaratish", "📂 Mening testlarim")
-    bot.send_message(msg.chat.id, "🎯 **Quiz Bot professional tizimiga xush kelibsiz!**", reply_markup=kb, parse_mode="Markdown")
+    bot.send_message(
+        msg.chat.id, 
+        "🎯 **Quiz Bot professional tizimiga xush kelibsiz!**", 
+        reply_markup=kb, 
+        parse_mode="Markdown"
+    )
 
-# --- ADMIN FILTRI VA TEST YARATISH ---
+# --- ADMIN UCHUN TEST YARATISH ---
 @bot.message_handler(func=lambda m: m.text == "📚 Yangi fan testi yaratish")
 def create_quiz(msg):
     if msg.from_user.id != ADMIN_ID:
-        return bot.send_message(msg.chat.id, "⛔️ **Kechirasiz, faqat admin test yarata oladi!**", parse_mode="Markdown")
+        bot.send_message(msg.chat.id, "⛔️ **Kechirasiz, faqat admin test yarata oladi!**", parse_mode="Markdown")
+        return
 
     user_session[msg.from_user.id] = {"step": "name", "questions": []}
-    bot.send_message(msg.chat.id, "📖 **Fan nomini kiriting (masalan: kimyo):**", reply_markup=types.ReplyKeyboardRemove())
+    bot.send_message(msg.chat.id, "📖 **Fan nomini kiriting (masalan: Kimyo):**", reply_markup=types.ReplyKeyboardRemove())
 
 @bot.message_handler(func=lambda m: m.from_user.id in user_session)
 def quiz_steps(msg):
@@ -52,33 +60,43 @@ def quiz_steps(msg):
     if s["step"] == "name":
         s["name"] = msg.text
         s["step"] = "time"
-        bot.send_message(msg.chat.id, "⏱ **Har bir savolga necha soniya vaqt berilsin?**")
+        bot.send_message(msg.chat.id, "⏱ **Har bir savolga necha soniya vaqt berilsin? (Faqat raqam yozing):**")
 
     elif s["step"] == "time":
         s["time"] = int(msg.text) if msg.text.isdigit() else 15
         s["step"] = "questions"
-        bot.send_message(msg.chat.id, "✅ Endi savollarni yuboring. Tugagach **Saqlash** tugmasini bosing.")
+        bot.send_message(msg.chat.id, "✅ Endi savollarni yuboring. Tugatganingizdan so'ng **🏁 Saqlash** tugmasini bosing.")
 
     elif s["step"] == "questions":
         if "Saqlash" in msg.text:
+            if not s["questions"]:
+                bot.send_message(msg.chat.id, "⚠️ Hech bo'lmasa 1 ta savol kiriting!")
+                return
+            
             conn = get_db(); cur = conn.cursor()
-            cur.execute("INSERT INTO quizzes (user_id, title, quiz_data, time_limit) VALUES (%s, %s, %s, %s)",
-                        (uid, s["name"], json.dumps(s["questions"]), s["time"]))
+            cur.execute(
+                "INSERT INTO quizzes (user_id, title, quiz_data, time_limit) VALUES (%s, %s, %s, %s)",
+                (uid, s["name"], json.dumps(s["questions"]), s["time"])
+            )
             conn.commit(); cur.close(); conn.close()
-            bot.send_message(msg.chat.id, "🎉 **Test saqlandi!**", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("📂 Mening testlarim"))
+            bot.send_message(msg.chat.id, "🎉 **Test bazaga saqlandi!**", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("📂 Mening testlarim"))
             del user_session[uid]
             return
 
+        # Savollarni qabul qilish
         blocks = msg.text.strip().split("\n\n")
         for b in blocks:
             lines = [l.strip() for l in b.split('\n') if l.strip()]
             if len(lines) >= 3:
                 s["questions"].append({"q": lines[0], "o": lines[1:]})
         
-        bot.send_message(msg.chat.id, f"📥 {len(s['questions'])} ta savol olindi.", 
-                         reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("🏁 Saqlash"))
+        bot.send_message(
+            msg.chat.id, 
+            f"📥 {len(s['questions'])} ta savol olindi.", 
+            reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("🏁 Saqlash")
+        )
 
-# --- TEST ENGINE ---
+# --- TESTNI BOSHQARISH (ENGINE) ---
 def start_quiz_engine(chat_id, quiz_id):
     conn = get_db(); cur = conn.cursor()
     cur.execute("SELECT title, quiz_data, time_limit FROM quizzes WHERE id=%s", (quiz_id,))
@@ -86,7 +104,7 @@ def start_quiz_engine(chat_id, quiz_id):
     if not row: return
 
     title, questions, t_limit = row[0], json.loads(row[1]), row[2]
-    active_quizzes[chat_id] = {"scores": {}, "start_time": time.time()}
+    active_quizzes[chat_id] = {"scores": {}, "total": len(questions)}
 
     bot.send_message(chat_id, f"🏁 **“{title}” testi boshlanmoqda!**", parse_mode="Markdown")
     
@@ -95,28 +113,34 @@ def start_quiz_engine(chat_id, quiz_id):
         correct_id = next(idx for idx, o in enumerate(q["o"]) if "+" in o)
         
         bot.send_poll(
-            chat_id, f"{i+1}/{len(questions)}: {q['q']}", options,
-            type="quiz", correct_option_id=correct_id, is_anonymous=False, open_period=t_limit
+            chat_id, 
+            f"{i+1}/{len(questions)}: {q['q']}", 
+            options,
+            type="quiz", 
+            correct_option_id=correct_id, 
+            is_anonymous=False, 
+            open_period=t_limit
         )
         time.sleep(t_limit + 1)
     
-    finalize_results(chat_id, title, len(questions))
+    finalize_results(chat_id, title)
 
-def finalize_results(chat_id, title, total):
+def finalize_results(chat_id, title):
     if chat_id not in active_quizzes: return
     data = active_quizzes[chat_id]
     sorted_res = sorted(data["scores"].items(), key=lambda x: x[1]['score'], reverse=True)
     
-    res_text = f"🏁 **“{title}” testi yakunlandi!**\n\n*{total} ta savolga javob berildi*\n\n📊 **Natijalar:**\n"
-    for i, (u_id, info) in enumerate(sorted_res[:5]):
+    res_text = f"🏁 **“{title}” testi yakunlandi!**\n\n📊 **Natijalar:**\n"
+    for i, (u_id, info) in enumerate(sorted_res[:10]): # Top 10
         icon = ["🥇", "🥈", "🥉", "👤"][i] if i < 4 else "👤"
         res_text += f"\n{icon} {info['name']} — **{info['score']} ta**"
 
-    bot.send_message(chat_id, res_text + "\n\n🏆 G'oliblarni tabriklaymiz!", parse_mode="Markdown")
+    bot.send_message(chat_id, res_text + "\n\n🏆 Tabriklaymiz!", parse_mode="Markdown")
     del active_quizzes[chat_id]
 
 @bot.poll_answer_handler()
 def handle_poll(ans):
+    # Bu qism faqat foydalanuvchi javobini hisobga oladi
     for c_id, quiz in active_quizzes.items():
         if ans.user.id not in quiz["scores"]:
             quiz["scores"][ans.user.id] = {"name": ans.user.first_name, "score": 0}
@@ -124,16 +148,21 @@ def handle_poll(ans):
 
 @bot.message_handler(func=lambda m: m.text == "📂 Mening testlarim")
 def my_quizzes(msg):
-    if msg.from_user.id != ADMIN_ID: return
     conn = get_db(); cur = conn.cursor()
     cur.execute("SELECT id, title FROM quizzes WHERE user_id=%s", (msg.from_user.id,))
     rows = cur.fetchall(); cur.close(); conn.close()
+    
+    if not rows:
+        bot.send_message(msg.chat.id, "📭 Hali testlar yaratmagansiz.")
+        return
+
     for r in rows:
-        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🚀 Testni boshlash", url=f"https://t.me/{bot.get_me().username}?start=run_{r[0]}"))
+        link = f"https://t.me/{bot.get_me().username}?start=run_{r[0]}"
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🚀 Testni boshlash", url=link))
         bot.send_message(msg.chat.id, f"🎲 **{r[1]}**", reply_markup=markup, parse_mode="Markdown")
 
-# --- POLLING ISHGA TUSHIRISH ---
+# --- BOTNI ISHGA TUSHIRISH ---
 if __name__ == "__main__":
-    bot.remove_webhook() # Webhookni o'chirib tashlash
-    print("Bot polling rejimida ishga tushdi...")
-    bot.infinity_polling()
+    bot.remove_webhook() # Webhookni butunlay tozalash
+    print("Bot Polling usulida ishga tushdi...")
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
