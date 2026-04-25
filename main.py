@@ -7,7 +7,7 @@ from telebot import types
 
 # --- SOZLAMALAR ---
 TOKEN = os.getenv("8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs")
-ADMIN_ID = int(os.getenv("5842665369"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", 5842665369))
 DATABASE_URL = os.getenv("postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a.ohio-postgres.render.com/quizdb_wgm2")
 
 # Render uchun bazaga ulanish manzilini to'g'irlash
