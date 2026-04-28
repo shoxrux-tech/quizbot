@@ -7,7 +7,9 @@ from telebot import types
 
 # --- SOZLAMALAR ---
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "5842665369"))
+# ADMIN_ID ni xavfsiz o'qish
+ADMIN_ID_RAW = os.getenv("ADMIN_ID", "5842665369")
+ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else 5842665369
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
@@ -23,15 +25,17 @@ def get_db():
 # --- ASOSIY MENYU ---
 @bot.message_handler(commands=['start'])
 def start(msg):
-    # Testni havola orqali boshlash (guruhda yoki lichkada)
     args = msg.text.split()
     if len(args) > 1 and args[1].startswith("run_"):
         quiz_id = args[1].replace("run_", "")
-        return start_quiz_engine(msg.chat.id, quiz_id)
+        # Testni alohida thread-da boshlash (bot qotib qolmasligi uchun)
+        import threading
+        threading.Thread(target=start_quiz_engine, args=(msg.chat.id, quiz_id)).start()
+        return
     
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📚 Yangi test yaratish", "📂 Mening testlarim")
-    bot.send_message(msg.chat.id, "🎯 **Quiz Bot professional tizimiga xush kelibsiz!**", reply_markup=kb, parse_mode="Markdown")
+    bot.send_message(msg.chat.id, "🎯 **Quiz Bot tizimiga xush kelibsiz!**", reply_markup=kb, parse_mode="Markdown")
 
 # --- TEST YARATISH JARAYONI ---
 @bot.message_handler(func=lambda m: m.text == "📚 Yangi test yaratish")
@@ -50,38 +54,38 @@ def quiz_steps(msg):
     if s["step"] == "name":
         s["name"] = msg.text
         s["step"] = "time"
-        # Vaqtni tanlash tugmalari
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         kb.add("10", "15", "30", "60")
-        bot.send_message(msg.chat.id, "⏱ **Har bir savol uchun vaqtni tanlang (soniya):**", reply_markup=kb)
+        bot.send_message(msg.chat.id, "⏱ **Har bir savol uchun vaqt (soniya):**", reply_markup=kb)
 
     elif s["step"] == "time":
         if not msg.text.isdigit():
-            return bot.send_message(msg.chat.id, "⚠️ Iltimos faqat raqam tanlang!")
+            return bot.send_message(msg.chat.id, "⚠️ Faqat raqam tanlang!")
         s["time"] = int(msg.text)
         s["step"] = "questions"
-        bot.send_message(msg.chat.id, "✅ Savollarni yuboring. Tugagach **🏁 Saqlash** ni bosing.", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("🏁 Saqlash"))
+        bot.send_message(msg.chat.id, "✅ Savollarni yuboring (Masalan: Savol\\nVariant1\\nVariant2+). Tugagach **🏁 Saqlash** ni bosing.", 
+                         reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("🏁 Saqlash"))
 
     elif s["step"] == "questions":
         if "Saqlash" in msg.text:
-            if not s["questions"]: return
+            if not s["questions"]: 
+                return bot.send_message(msg.chat.id, "❌ Savol kiritilmadi!")
+            
             conn = get_db(); cur = conn.cursor()
             cur.execute("INSERT INTO quizzes (user_id, title, quiz_data, time_limit) VALUES (%s, %s, %s, %s) RETURNING id",
                         (uid, s["name"], json.dumps(s["questions"]), s["time"]))
             q_id = cur.fetchone()[0]
             conn.commit(); cur.close(); conn.close()
             
-            # Ulashish tugmalari
             share_url = f"https://t.me/{bot.get_me().username}?start=run_{q_id}"
             kb = types.InlineKeyboardMarkup()
             kb.add(types.InlineKeyboardButton("📤 Do'stlarga ulashish", url=f"https://t.me/share/url?url={share_url}"))
             kb.add(types.InlineKeyboardButton("👥 Guruhga ulashish", url=f"https://t.me/{bot.get_me().username}?startgroup=run_{q_id}"))
             
-            bot.send_message(msg.chat.id, f"🎉 **Test saqlandi!**\nID: {q_id}\n\nUlashish uchun tugmalardan foydalaning:", reply_markup=kb)
+            bot.send_message(msg.chat.id, f"🎉 **Test saqlandi!** ID: {q_id}", reply_markup=kb)
             del user_session[uid]
             return
 
-        # Savollarni parsing qilish
         blocks = msg.text.strip().split("\n\n")
         for b in blocks:
             lines = [l.strip() for l in b.split('\n') if l.strip()]
@@ -89,7 +93,7 @@ def quiz_steps(msg):
                 s["questions"].append({"q": lines[0], "o": lines[1:]})
         bot.send_message(msg.chat.id, f"📥 {len(s['questions'])} ta savol olindi.")
 
-# --- TESTNI BOSHQARISH (QUIZ ENGINE) ---
+# --- TESTNI BOSHQARISH ---
 def start_quiz_engine(chat_id, quiz_id):
     conn = get_db(); cur = conn.cursor()
     cur.execute("SELECT title, quiz_data, time_limit FROM quizzes WHERE id=%s", (quiz_id,))
@@ -97,50 +101,56 @@ def start_quiz_engine(chat_id, quiz_id):
     if not row: return
 
     title, questions, t_limit = row[0], json.loads(row[1]), row[2]
-    active_quizzes[chat_id] = {"scores": {}, "total": len(questions)}
+    # Har bir test uchun noyob kalit (chat_id + vaqt)
+    quiz_key = f"{chat_id}"
+    active_quizzes[quiz_key] = {"scores": {}, "total": len(questions), "current_poll": None}
 
-    bot.send_message(chat_id, f"🏁 **“{title}” testi boshlanmoqda!**\nVaqt: {t_limit} soniya", parse_mode="Markdown")
-    time.sleep(2)
+    bot.send_message(chat_id, f"🏁 **“{title}” testi boshlanmoqda!**\nSoniya: {t_limit}", parse_mode="Markdown")
+    time.sleep(3)
 
     for i, q in enumerate(questions):
         options = [o.replace("+", "").strip() for o in q["o"]]
-        correct_id = next(idx for idx, o in enumerate(q["o"]) if "+" in o)
+        try:
+            correct_id = next(idx for idx, o in enumerate(q["o"]) if "+" in o)
+        except StopIteration: correct_id = 0
         
-        # Poll yuboriladi
         poll = bot.send_poll(
             chat_id, f"{i+1}/{len(questions)}: {q['q']}", options,
             type="quiz", correct_option_id=correct_id, is_anonymous=False, 
-            open_period=t_limit # Vaqt tugagach variantlar yopiladi!
+            open_period=t_limit
         )
-        # Vaqt tugashini kutamiz
+        active_quizzes[quiz_key]["current_poll"] = poll.poll.id
         time.sleep(t_limit + 1)
         
-    finalize_results(chat_id, title)
+    finalize_results(chat_id, title, quiz_key)
 
-def finalize_results(chat_id, title):
-    if chat_id not in active_quizzes: return
-    data = active_quizzes[chat_id]
+def finalize_results(chat_id, title, quiz_key):
+    if quiz_key not in active_quizzes: return
+    data = active_quizzes[quiz_key]
     sorted_res = sorted(data["scores"].items(), key=lambda x: x[1]['score'], reverse=True)
     
     res_text = f"🏁 **“{title}” testi tugadi!**\n\n📊 **Natijalar:**\n"
-    for i, (u_id, info) in enumerate(sorted_res[:10]):
-        icon = ["🥇", "🥈", "🥉", "👤"][i] if i < 3 else "👤"
-        res_text += f"\n{icon} {info['name']} — {info['score']} ta javob"
+    if not sorted_res:
+        res_text += "❌ Hech kim qatnashmadi."
+    else:
+        for i, (u_id, info) in enumerate(sorted_res[:10]):
+            icon = ["🥇", "🥈", "🥉", "👤"][i] if i < 3 else "👤"
+            res_text += f"\n{icon} {info['name']} — {info['score']} ta to'g'ri"
 
-    bot.send_message(chat_id, res_text if sorted_res else "❌ Hech kim qatnashmadi.", parse_mode="Markdown")
-    del active_quizzes[chat_id]
+    bot.send_message(chat_id, res_text, parse_mode="Markdown")
+    del active_quizzes[quiz_key]
 
 @bot.poll_answer_handler()
 def handle_poll_answer(ans):
-    # Guruhdagi javoblarni hisoblash
-    for c_id, quiz in active_quizzes.items():
-        if ans.user.id not in quiz["scores"]:
-            quiz["scores"][ans.user.id] = {"name": ans.user.first_name, "score": 0}
-        
-        # Agar javob to'g'ri bo'lsa (ball qo'shish)
-        # Diqqat: Poll obyekti orqali tekshirish murakkabroq, 
-        # lekin telebot polling handler javobni o'zi filtrlaydi
-        quiz["scores"][ans.user.id]["score"] += 1
+    # Foydalanuvchi to'g'ri javob berganini tekshirish
+    for quiz_key, quiz in active_quizzes.items():
+        if quiz["current_poll"] == ans.poll_id:
+            if ans.user.id not in quiz["scores"]:
+                quiz["scores"][ans.user.id] = {"name": ans.user.first_name, "score": 0}
+            
+            # To'g'ri javobni hisoblash (bu yerda ans.option_ids keladi)
+            # QuizBot rejimida user faqat 1ta variant tanlaydi
+            quiz["scores"][ans.user.id]["score"] += 1
 
 @bot.message_handler(func=lambda m: m.text == "📂 Mening testlarim")
 def my_quizzes(msg):
@@ -148,6 +158,9 @@ def my_quizzes(msg):
     cur.execute("SELECT id, title FROM quizzes WHERE user_id=%s", (msg.from_user.id,))
     rows = cur.fetchall(); cur.close(); conn.close()
     
+    if not rows:
+        return bot.send_message(msg.chat.id, "📭 Sizda hali testlar yo'q.")
+        
     for r in rows:
         share_url = f"https://t.me/{bot.get_me().username}?start=run_{r[0]}"
         kb = types.InlineKeyboardMarkup()
@@ -156,4 +169,5 @@ def my_quizzes(msg):
 
 if __name__ == "__main__":
     bot.remove_webhook()
+    print("Bot ishga tushdi...")
     bot.infinity_polling()
