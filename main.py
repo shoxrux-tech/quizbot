@@ -1,30 +1,40 @@
+import os
 import logging
-import asyncio
+import psycopg2 # PostgreSQL uchun kutubxona
 from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.utils import executor
-import sqlite3
 
 # --- SOZLAMALAR ---
-API_TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
-ADMIN_ID = 5842665369  # O'z ID'ingiz
+# Token va Baza manzilini Render'ning Environment Variables bo'limidan oladi
+API_TOKEN = os.getenv('BOT_TOKEN')
+DATABASE_URL = os.getenv('DATABASE_URL')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 12345678)) # O'z ID'ingizni yozing
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(bot)
 
-# --- BAZA BILAN ISHLASH ---
-db = sqlite3.connect("quiz.db")
-sql = db.cursor()
-sql.execute("""CREATE TABLE IF NOT EXISTS quizes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    question TEXT,
-    options TEXT,
-    correct_id INTEGER,
-    owner_id INTEGER
-)""")
-db.commit()
+# --- BAZA BILAN ISHLASH (PostgreSQL) ---
+def get_db_connection():
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS quizes (
+        id SERIAL PRIMARY KEY,
+        question TEXT,
+        options TEXT,
+        correct_id INTEGER,
+        owner_id BIGINT
+    )""")
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Bot ishga tushganda bazani tayyorlash
+init_db()
 
 # --- PARSING FUNKSIYASI ---
 def parse_text_to_quiz(text):
@@ -46,50 +56,56 @@ def parse_text_to_quiz(text):
         parsed_questions.append((question, "|".join(options), correct_id))
     return parsed_questions
 
-# --- BUYRUQLAR ---
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    await message.answer(f"Salom! Men professional Quiz botman.\n"
-                         f"Admin testlarni matn ko'rinishida yuborishi mumkin.\n"
-                         f"Foydalanuvchilar esa /quizzes orqali testlarni ko'ra oladi.")
+    await message.answer("Salom! Men o'chmas xotirali Quiz botman. \nAdmin test tashlashi mumkin.")
 
 @dp.message_handler(commands=['quizzes'])
 async def show_quizzes(message: types.Message):
-    sql.execute("SELECT id, question FROM quizes")
-    all_quiz = sql.fetchall()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, question FROM quizes")
+    all_quiz = cur.fetchall()
+    cur.close()
+    conn.close()
+
     if not all_quiz:
         await message.answer("Hozircha testlar yo'q.")
         return
     
     keyboard = types.InlineKeyboardMarkup()
     for q in all_quiz:
-        keyboard.add(types.InlineKeyboardButton(text=q[1], callback_data=f"start_quiz_{q[0]}"))
-    await message.answer("Mavjud testlar ro'yxati:", reply_markup=keyboard)
+        keyboard.add(types.InlineKeyboardButton(text=q[1], callback_data=f"quiz_{q[0]}"))
+    await message.answer("Mavjud testlar:", reply_markup=keyboard)
 
-# --- ADMIN UCHUN AVTOMATIK TEST YARATISH ---
 @dp.message_handler(lambda m: m.from_user.id == ADMIN_ID)
 async def admin_parse(message: types.Message):
-    if '+' not in message.text:
-        return # Oddiy xabarlarga javob bermaydi
+    if '+' not in message.text: return
 
     questions = parse_text_to_quiz(message.text)
+    conn = get_db_connection()
+    cur = conn.cursor()
     for q, opt, corr in questions:
-        sql.execute("INSERT INTO quizes (question, options, correct_id, owner_id) VALUES (?, ?, ?, ?)",
+        cur.execute("INSERT INTO quizes (question, options, correct_id, owner_id) VALUES (%s, %s, %s, %s)",
                     (q, opt, corr, message.from_user.id))
-    db.commit()
-    await message.answer(f"✅ {len(questions)} ta savol bazaga saqlandi!")
+    conn.commit()
+    cur.close()
+    conn.close()
+    await message.answer(f"✅ {len(questions)} ta savol bazaga saqlandi va o'chib ketmaydi!")
 
-# --- TESTNI BOSHLASH (CALLBACK) ---
-@dp.callback_query_handler(lambda c: c.data.startswith('start_quiz_'))
+@dp.callback_query_handler(lambda c: c.data.startswith('quiz_'))
 async def process_quiz(callback_query: types.CallbackQuery):
-    quiz_id = callback_query.data.split('_')[2]
-    sql.execute("SELECT question, options, correct_id FROM quizes WHERE id=?", (quiz_id,))
-    q_data = sql.fetchone()
+    quiz_id = callback_query.data.split('_')[1]
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT question, options, correct_id FROM quizes WHERE id=%s", (quiz_id,))
+    q_data = cur.fetchone()
+    cur.close()
+    conn.close()
     
     if q_data:
         question, options_raw, correct_id = q_data
         options = options_raw.split('|')
-        
         await bot.send_poll(
             chat_id=callback_query.message.chat.id,
             question=question,
@@ -97,8 +113,8 @@ async def process_quiz(callback_query: types.CallbackQuery):
             type='quiz',
             correct_option_id=correct_id,
             is_anonymous=False,
-            explanation="Bu @QuizBot kabi professional test!", # Tushuntirish qismi
-            open_period=30 # 30 soniya vaqt (QuizBot funksiyasi)
+            explanation="To'g'ri javob belgilandi!",
+            open_period=30
         )
     await callback_query.answer()
 
