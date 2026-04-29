@@ -1,122 +1,186 @@
 import os
+import asyncio
 import logging
-import psycopg2 # PostgreSQL uchun kutubxona
+import psycopg2
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 # --- SOZLAMALAR ---
-# Token va Baza manzilini Render'ning Environment Variables bo'limidan oladi
 API_TOKEN = os.getenv('BOT_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 12345678)) # O'z ID'ingizni yozing
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+bot = Bot(token=API_TOKEN, parse_mode="HTML")
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-# --- BAZA BILAN ISHLASH (PostgreSQL) ---
+# --- BAZA BILAN ISHLASH ---
 def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    return conn
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS quizes (
+    cur.execute("""CREATE TABLE IF NOT EXISTS quiz_titles (
         id SERIAL PRIMARY KEY,
+        title TEXT,
+        owner_id BIGINT,
+        timer_seconds INTEGER DEFAULT 30
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS questions (
+        id SERIAL PRIMARY KEY,
+        quiz_id INTEGER REFERENCES quiz_titles(id) ON DELETE CASCADE,
         question TEXT,
         options TEXT,
-        correct_id INTEGER,
-        owner_id BIGINT
+        correct_id INTEGER
     )""")
     conn.commit()
     cur.close()
     conn.close()
 
-# Bot ishga tushganda bazani tayyorlash
 init_db()
 
-# --- PARSING FUNKSIYASI ---
-def parse_text_to_quiz(text):
-    blocks = text.strip().split('\n\n')
-    parsed_questions = []
-    for block in blocks:
-        lines = block.split('\n')
-        if len(lines) < 2: continue
-        
-        question = lines[0]
-        options = []
-        correct_id = 0
-        for i, opt in enumerate(lines[1:]):
-            if opt.endswith('+'):
-                correct_id = i
-                options.append(opt[:-1].strip())
-            else:
-                options.append(opt.strip())
-        parsed_questions.append((question, "|".join(options), correct_id))
-    return parsed_questions
+class QuizCreate(StatesGroup):
+    waiting_for_title = State()
+    waiting_for_timer = State()
+    waiting_for_questions = State()
+
+# --- ASOSIY MENYU ---
+def main_menu():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row("🆕 Yangi test yaratish", "📚 Mening testlarim")
+    return keyboard
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    await message.answer("Salom! Men o'chmas xotirali Quiz botman. \nAdmin test tashlashi mumkin.")
+    await message.answer(f"Salom {message.from_user.full_name}!", reply_markup=main_menu())
 
-@dp.message_handler(commands=['quizzes'])
-async def show_quizzes(message: types.Message):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, question FROM quizes")
-    all_quiz = cur.fetchall()
-    cur.close()
-    conn.close()
+# --- TEST YARATISH VA O'CHIRISH ---
+@dp.message_handler(lambda m: m.text == "🆕 Yangi test yaratish" and m.from_user.id == ADMIN_ID)
+async def start_quiz_creation(message: types.Message):
+    await QuizCreate.waiting_for_title.set()
+    await message.answer("Test nomini kiriting:", reply_markup=types.ReplyKeyboardRemove())
 
-    if not all_quiz:
-        await message.answer("Hozircha testlar yo'q.")
+@dp.message_handler(state=QuizCreate.waiting_for_title)
+async def set_title(message: types.Message, state: FSMContext):
+    await state.update_data(title=message.text)
+    await QuizCreate.waiting_for_timer.set()
+    await message.answer("Har bir savol uchun vaqtni kiriting (soniyalarda, masalan: 30):")
+
+@dp.message_handler(state=QuizCreate.waiting_for_timer)
+async def set_timer(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Iltimos, faqat raqam kiriting!")
         return
+    await state.update_data(timer=int(message.text), questions=[])
+    await QuizCreate.waiting_for_questions.set()
+    await message.answer("Endi savollarni tashlang va tugatgach <b>/done</b> bosing.")
+
+@dp.message_handler(state=QuizCreate.waiting_for_questions)
+async def process_questions(message: types.Message, state: FSMContext):
+    if message.text == "/done":
+        data = await state.get_data()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO quiz_titles (title, owner_id, timer_seconds) VALUES (%s, %s, %s) RETURNING id", 
+                    (data['title'], message.from_user.id, data['timer']))
+        quiz_id = cur.fetchone()[0]
+        for q, opt, corr in data['questions']:
+            cur.execute("INSERT INTO questions (quiz_id, question, options, correct_id) VALUES (%s, %s, %s, %s)",
+                        (quiz_id, q, "|".join(opt), corr))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await state.finish()
+        await message.answer(f"✅ '{data['title']}' saqlandi!", reply_markup=main_menu())
+        return
+
+    # Savollarni parsing qilish (avvalgi mantiq)
+    blocks = message.text.strip().split('\n\n')
+    new_qs = []
+    for block in blocks:
+        lines = block.split('\n')
+        if len(lines) < 2: continue
+        opts, corr_id = [], 0
+        for i, o in enumerate(lines[1:]):
+            if o.endswith('+'):
+                corr_id = i
+                opts.append(o[:-1].strip())
+            else: opts.append(o.strip())
+        new_qs.append((lines[0], opts, corr_id))
     
-    keyboard = types.InlineKeyboardMarkup()
-    for q in all_quiz:
-        keyboard.add(types.InlineKeyboardButton(text=q[1], callback_data=f"quiz_{q[0]}"))
-    await message.answer("Mavjud testlar:", reply_markup=keyboard)
+    data = await state.get_data()
+    data['questions'].extend(new_qs)
+    await state.update_data(questions=data['questions'])
+    await message.answer(f"📥 {len(new_qs)} ta savol olindi. Davom eting yoki /done.")
 
-@dp.message_handler(lambda m: m.from_user.id == ADMIN_ID)
-async def admin_parse(message: types.Message):
-    if '+' not in message.text: return
-
-    questions = parse_text_to_quiz(message.text)
+# --- TESTLARNI BOSHQARISH ---
+@dp.message_handler(lambda m: m.text == "📚 Mening testlarim")
+async def my_quizzes(message: types.Message):
     conn = get_db_connection()
     cur = conn.cursor()
-    for q, opt, corr in questions:
-        cur.execute("INSERT INTO quizes (question, options, correct_id, owner_id) VALUES (%s, %s, %s, %s)",
-                    (q, opt, corr, message.from_user.id))
-    conn.commit()
+    cur.execute("SELECT id, title FROM quiz_titles WHERE owner_id=%s", (message.from_user.id,))
+    rows = cur.fetchall()
     cur.close()
     conn.close()
-    await message.answer(f"✅ {len(questions)} ta savol bazaga saqlandi va o'chib ketmaydi!")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('quiz_'))
-async def process_quiz(callback_query: types.CallbackQuery):
+    if not rows:
+        await message.answer("Testlar topilmadi.")
+        return
+
+    for q_id, title in rows:
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton("▶️ Testni boshlash", callback_data=f"run_{q_id}"),
+            types.InlineKeyboardButton("🗑 Testni o'chirish", callback_data=f"del_{q_id}"),
+            types.InlineKeyboardButton("📤 Ulashish", url=f"https://t.me/share/url?url=https://t.me/{(await bot.get_me()).username}?start=quiz_{q_id}")
+        )
+        await message.answer(f"📋 <b>{title}</b>", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith('del_'))
+async def delete_quiz(callback_query: types.CallbackQuery):
     quiz_id = callback_query.data.split('_')[1]
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT question, options, correct_id FROM quizes WHERE id=%s", (quiz_id,))
-    q_data = cur.fetchone()
+    cur.execute("DELETE FROM quiz_titles WHERE id=%s", (quiz_id,))
+    conn.commit()
     cur.close()
     conn.close()
+    await callback_query.message.delete()
+    await callback_query.answer("Test o'chirildi!")
+
+# --- AVTOMATIK TEST O'TKAZISH LOGIKASI ---
+@dp.callback_query_handler(lambda c: c.data.startswith('run_'))
+async def run_quiz_handler(callback_query: types.CallbackQuery):
+    quiz_id = callback_query.data.split('_')[1]
+    await callback_query.answer("Test boshlanmoqda...")
     
-    if q_data:
-        question, options_raw, correct_id = q_data
-        options = options_raw.split('|')
-        await bot.send_poll(
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT timer_seconds FROM quiz_titles WHERE id=%s", (quiz_id,))
+    timer = cur.fetchone()[0]
+    cur.execute("SELECT question, options, correct_id FROM questions WHERE quiz_id=%s", (quiz_id,))
+    questions = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    for q, opts_raw, corr_id in questions:
+        poll = await bot.send_poll(
             chat_id=callback_query.message.chat.id,
-            question=question,
-            options=options,
+            question=q,
+            options=opts_raw.split('|'),
             type='quiz',
-            correct_option_id=correct_id,
+            correct_option_id=corr_id,
             is_anonymous=False,
-            explanation="To'g'ri javob belgilandi!",
-            open_period=30
+            open_period=timer # Vaqt tugagach yopiladi
         )
-    await callback_query.answer()
+        await asyncio.sleep(timer + 2) # Vaqt tugashini kutadi + 2 soniya pauza
+
+    await bot.send_message(callback_query.message.chat.id, "🏁 Test yakunlandi!")
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
