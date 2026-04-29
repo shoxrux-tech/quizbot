@@ -1,135 +1,106 @@
-import os
-import telebot
-import psycopg2
-import json
-import time
-import threading
-from telebot import types
+import logging
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.utils import executor
+import sqlite3
 
 # --- SOZLAMALAR ---
-TOKEN = "8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs"
-DATABASE_URL = os.getenv("postgresql://quizdb_user:g9nB6DRVNQgHtWg2LI56KaWQcRo8CPCf@dpg-d7ks1157vvec739ms05g-a.ohio-postgres.render.com/quizdb_wgm2")
-bot = telebot.TeleBot(TOKEN)
+API_TOKEN = '8533049259:AAGlLQaMGq9RTvcui9iyHwz9yi9ydzNjpLs'
+ADMIN_ID = 5842665369  # O'z ID'ingiz
 
-def get_db():
-    return psycopg2.connect(DATABASE_URL)
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-# --- BAZANI AVTOMATIK TO'G'IRLASH (Terminal kerak emas!) ---
-def auto_fix_db():
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        # Jadval yo'q bo'lsa yaratadi, bor bo'lsa vaqt ustunini qo'shadi
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS quizzes (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                title TEXT,
-                quiz_data JSONB,
-                time_limit INTEGER DEFAULT 15
-            );
-            ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS time_limit INTEGER DEFAULT 15;
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("✅ Baza muvaffaqiyatli sozlandi!")
-    except Exception as e:
-        print(f"❌ Baza xatosi: {e}")
+# --- BAZA BILAN ISHLASH ---
+db = sqlite3.connect("quiz.db")
+sql = db.cursor()
+sql.execute("""CREATE TABLE IF NOT EXISTS quizes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question TEXT,
+    options TEXT,
+    correct_id INTEGER,
+    owner_id INTEGER
+)""")
+db.commit()
 
-# --- INLINE QUERY (Guruhga ulashish) ---
-@bot.inline_handler(lambda query: query.query.startswith("share_"))
-def share_quiz(inline_query):
-    try:
-        q_id = inline_query.query.split("_")[1]
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute('SELECT title FROM quizzes WHERE id = %s', (q_id,))
-        res = cur.fetchone()
-        cur.close(); conn.close()
+# --- PARSING FUNKSIYASI ---
+def parse_text_to_quiz(text):
+    blocks = text.strip().split('\n\n')
+    parsed_questions = []
+    for block in blocks:
+        lines = block.split('\n')
+        if len(lines) < 2: continue
         
-        if res:
-            r = types.InlineQueryResultArticle(
-                id=q_id,
-                title=f"📝 Test: {res[0]}",
-                input_message_content=types.InputTextMessageContent(
-                    f"📚 **Yangi test: {res[0]}**\n\nTestni ishlash uchun pastdagi tugmani bosing 👇",
-                    parse_mode="Markdown"
-                ),
-                reply_markup=types.InlineKeyboardMarkup().add(
-                    types.InlineKeyboardButton("🚀 Testni boshlash", url=f"https://t.me/{bot.get_me().username}?start=run_{q_id}")
-                )
-            )
-            bot.answer_inline_query(inline_query.id, [r], cache_time=1)
-    except: pass
+        question = lines[0]
+        options = []
+        correct_id = 0
+        for i, opt in enumerate(lines[1:]):
+            if opt.endswith('+'):
+                correct_id = i
+                options.append(opt[:-1].strip())
+            else:
+                options.append(opt.strip())
+        parsed_questions.append((question, "|".join(options), correct_id))
+    return parsed_questions
 
-# --- START ---
-@bot.message_handler(commands=['start'])
-def start(message):
-    args = message.text.split()
-    if len(args) > 1 and args[1].startswith('run_'):
-        q_id = args[1].split('_')[1]
-        return show_timer(message.chat.id, q_id)
+# --- BUYRUQLAR ---
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message):
+    await message.answer(f"Salom! Men professional Quiz botman.\n"
+                         f"Admin testlarni matn ko'rinishida yuborishi mumkin.\n"
+                         f"Foydalanuvchilar esa /quizzes orqali testlarni ko'ra oladi.")
+
+@dp.message_handler(commands=['quizzes'])
+async def show_quizzes(message: types.Message):
+    sql.execute("SELECT id, question FROM quizes")
+    all_quiz = sql.fetchall()
+    if not all_quiz:
+        await message.answer("Hozircha testlar yo'q.")
+        return
     
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("📚 Yangi test yaratish", "📂 Mening testlarim")
-    bot.send_message(message.chat.id, "🎯 Quiz Bot professional tizimi tayyor!", reply_markup=markup)
+    keyboard = types.InlineKeyboardMarkup()
+    for q in all_quiz:
+        keyboard.add(types.InlineKeyboardButton(text=q[1], callback_data=f"start_quiz_{q[0]}"))
+    await message.answer("Mavjud testlar ro'yxati:", reply_markup=keyboard)
 
-def show_timer(chat_id, q_id):
-    markup = types.InlineKeyboardMarkup()
-    markup.row(types.InlineKeyboardButton("15 sek", callback_data=f"t_15_{q_id}"),
-               types.InlineKeyboardButton("30 sek", callback_data=f"t_30_{q_id}"))
-    bot.send_message(chat_id, "⏱ Savollar vaqtini tanlang:", reply_markup=markup)
+# --- ADMIN UCHUN AVTOMATIK TEST YARATISH ---
+@dp.message_handler(lambda m: m.from_user.id == ADMIN_ID)
+async def admin_parse(message: types.Message):
+    if '+' not in message.text:
+        return # Oddiy xabarlarga javob bermaydi
 
-# --- TESTLARNI CHIQARISH ---
-@bot.message_handler(func=lambda m: m.text == "📂 Mening testlarim")
-def list_tests(message):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('SELECT id, title FROM quizzes WHERE user_id = %s', (message.from_user.id,))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    questions = parse_text_to_quiz(message.text)
+    for q, opt, corr in questions:
+        sql.execute("INSERT INTO quizes (question, options, correct_id, owner_id) VALUES (?, ?, ?, ?)",
+                    (q, opt, corr, message.from_user.id))
+    db.commit()
+    await message.answer(f"✅ {len(questions)} ta savol bazaga saqlandi!")
+
+# --- TESTNI BOSHLASH (CALLBACK) ---
+@dp.callback_query_handler(lambda c: c.data.startswith('start_quiz_'))
+async def process_quiz(callback_query: types.CallbackQuery):
+    quiz_id = callback_query.data.split('_')[2]
+    sql.execute("SELECT question, options, correct_id FROM quizes WHERE id=?", (quiz_id,))
+    q_data = sql.fetchone()
     
-    if not rows:
-        return bot.send_message(message.chat.id, "📭 Testlar yo'q.")
+    if q_data:
+        question, options_raw, correct_id = q_data
+        options = options_raw.split('|')
         
-    for r in rows:
-        markup = types.InlineKeyboardMarkup()
-        markup.row(types.InlineKeyboardButton("🚀 Boshlash", callback_data=f"run_{r[0]}"))
-        markup.add(types.InlineKeyboardButton("📤 Guruhga ulashish", switch_inline_query=f"share_{r[0]}"))
-        bot.send_message(message.chat.id, f"📂 **{r[1]}**", reply_markup=markup, parse_mode="Markdown")
+        await bot.send_poll(
+            chat_id=callback_query.message.chat.id,
+            question=question,
+            options=options,
+            type='quiz',
+            correct_option_id=correct_id,
+            is_anonymous=False,
+            explanation="Bu @QuizBot kabi professional test!", # Tushuntirish qismi
+            open_period=30 # 30 soniya vaqt (QuizBot funksiyasi)
+        )
+    await callback_query.answer()
 
-# --- TEST MANTIQI ---
-def run_quiz(chat_id, q_id, interval):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('SELECT title, quiz_data FROM quizzes WHERE id = %s', (q_id,))
-    res = cur.fetchone()
-    cur.close(); conn.close()
-    
-    if res:
-        title, data = res[0], json.loads(res[1]) if isinstance(res[1], str) else res[1]
-        bot.send_message(chat_id, f"🏁 **{title}** boshlandi!")
-        for idx, i in enumerate(data, 1):
-            try:
-                bot.send_poll(chat_id, f"[{idx}/{len(data)}] {i['q']}", i['o'], 
-                              type='quiz', correct_option_id=i['c'], is_anonymous=False, 
-                              open_period=interval)
-                time.sleep(interval + 2)
-            except: break
-        bot.send_message(chat_id, "✅ Test yakunlandi!")
-
-@bot.callback_query_handler(func=lambda call: True)
-def calls(call):
-    d = call.data.split('_')
-    if d[0] == 't':
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        threading.Thread(target=run_quiz, args=(call.message.chat.id, d[2], int(d[1]))).start()
-    elif d[0] == 'run':
-        show_timer(call.message.chat.id, d[1])
-
-# --- BOTNI ISHGA TUSHIRISH ---
 if __name__ == '__main__':
-    auto_fix_db() # Bazani o'zi to'g'irlaydi
-    print("Bot yoqildi...")
-    bot.infinity_polling(timeout=20, long_polling_timeout=10)
+    executor.start_polling(dp, skip_updates=True)
