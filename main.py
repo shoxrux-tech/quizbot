@@ -121,3 +121,10 @@ def callback_handler(call):
 
 if __name__ == '__main__':
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
+# '📂 Mening testlarim' bo'limida har bir test ostiga shu tugmani qo'shing:
+markup = types.InlineKeyboardMarkup()
+markup.add(types.InlineKeyboardButton("🚀 Boshlash", callback_data=f"run_{r[0]}"))
+# MANA SHU TUGMA CHAT VA GURUHLARGA ULASHISH IMKONINI BERADI:
+markup.add(types.InlineKeyboardButton("📤 Chat/Guruhga ulashish", switch_inline_query=f"share_{r[0]}"))
+bot.send_message(message.chat.id, f"📂 **{r[1]}**", reply_markup=markup, parse_mode="Markdown")
