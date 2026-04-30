@@ -1,87 +1,88 @@
 import os
-import logging
+import telebot
 import psycopg2
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telebot import types
 
-# --- LOGGING ---
-logging.basicConfig(level=logging.INFO)
-
-# --- SOZLAMALAR ---
-# Tokenni olish va tekshirish
-API_TOKEN = os.getenv('BOT_TOKEN')
+# 1. Настройка данных
+# Берем токен и данные базы из настроек Render
+TOKEN = os.getenv('BOT_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID_RAW = os.getenv('ADMIN_ID', '0')
+# Твой ID (укажи его в Environment Variables на Render)
+ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 
-if not API_TOKEN:
-    raise ValueError("XATOLIK: BOT_TOKEN topilmadi! Render Environment Variables'ni tekshiring.")
+bot = telebot.TeleBot(TOKEN)
 
-try:
-    ADMIN_ID = int(ADMIN_ID_RAW)
-except ValueError:
-    ADMIN_ID = 0
-
-bot = Bot(token=API_TOKEN, parse_mode="HTML")
-dp = Dispatcher(bot)
-
-# --- KLAVIATURA ---
+# 2. Главное меню
 def main_menu():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.row(KeyboardButton("📚 Mening testlarim"), KeyboardButton("📊 Statistika"))
-    keyboard.add(KeyboardButton("🆕 Yangi fan testi yaratish"))
-    return keyboard
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton("📚 Mening testlarim")
+    btn2 = types.KeyboardButton("📊 Statistika")
+    btn3 = types.KeyboardButton("🆕 Yangi fan testi yaratish")
+    markup.add(btn1, btn2)
+    markup.add(btn3)
+    return markup
 
-# --- START KOMANDASI ---
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
-    args = message.get_args()
-    if args and args.startswith('run_'):
-        # Ulashish orqali kirilganda testni boshlash logikasi
-        await message.answer("🚀 Test yuklanmoqda...")
-        return
-    await message.answer("👋 Bot ishga tushdi! Bo'limni tanlang:", reply_markup=main_menu())
+# 3. Обработка команды /start
+@bot.message_handler(commands=['start'])
+def start(message):
+    # Проверка: если человек пришел по ссылке (start=run_123)
+    if len(message.text.split()) > 1:
+        payload = message.text.split()[1]
+        if payload.startswith('run_'):
+            quiz_id = payload.split('_')[1]
+            bot.send_message(message.chat.id, f"🚀 Test yuklanmoqda (ID: {quiz_id})...")
+            return
 
-# --- ULASHISH TUGMALARI BOR BO'LIM ---
-@dp.message_handler(lambda m: m.text == "📚 Mening testlarim")
-async def my_quizzes(message: types.Message):
+    bot.send_message(
+        message.chat.id, 
+        "👋 Salom! Test botiga xush kelibsiz.", 
+        reply_markup=main_menu()
+    )
+
+# 4. Список тестов (Кнопки поделиться и Админка)
+@bot.message_handler(func=lambda message: message.text == "📚 Mening testlarim")
+def show_quizzes(message):
     user_id = message.from_user.id
-    try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-        cur = conn.cursor()
-        
-        if user_id == ADMIN_ID:
-            cur.execute("SELECT id, title FROM quiz_titles")
-        else:
-            cur.execute("SELECT id, title FROM quiz_titles WHERE owner_id=%s", (user_id,))
-        
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        await message.answer(f"Bazaga ulanishda xato: {e}")
-        return
+    
+    # Подключаемся к базе данных
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    cur = conn.cursor()
+    
+    # Если ты админ — видишь всё. Если нет — только свои тесты.
+    if user_id == ADMIN_ID:
+        cur.execute("SELECT id, title FROM quiz_titles")
+    else:
+        cur.execute("SELECT id, title FROM quiz_titles WHERE owner_id=%s", (user_id,))
+    
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
 
     if not rows:
-        await message.answer("Sizda hali testlar yo'q.")
+        bot.send_message(message.chat.id, "Hozircha testlar yo'q.")
         return
 
-    bot_info = await bot.get_me()
+    bot_username = bot.get_me().username
     for q_id, title in rows:
-        # Ulashish havolasi (Deep Linking)
-        share_url = f"https://t.me/share/url?url=https://t.me/{bot_info.username}?start=run_{q_id}"
+        # Ссылка для кнопки "Поделиться"
+        share_url = f"https://t.me/share/url?url=https://t.me/{bot_username}?start=run_{q_id}"
         
-        kb = InlineKeyboardMarkup(row_width=1)
-        kb.add(
-            InlineKeyboardButton("🚀 Boshlash", callback_data=f"run_{q_id}"),
-            InlineKeyboardButton("📤 Guruhga ulashish", url=share_url)
-        )
+        markup = types.InlineKeyboardMarkup()
+        btn_start = types.InlineKeyboardButton("🚀 Boshlash", callback_data=f"run_{q_id}")
+        btn_share = types.InlineKeyboardButton("📤 Ulashish", url=share_url)
+        markup.add(btn_start, btn_share)
+        
+        # Если админ — добавляем кнопку удаления
         if user_id == ADMIN_ID:
-            kb.add(InlineKeyboardButton("🗑 O'chirish (Admin)", callback_data=f"del_{q_id}"))
+            btn_del = types.InlineKeyboardButton("🗑 O'chirish (Admin)", callback_data=f"del_{q_id}")
+            markup.add(btn_del)
             
-        await message.answer(f"📋 Test: <b>{title}</b>", reply_markup=kb)
+        bot.send_message(message.chat.id, f"📋 Test: *{title}*", parse_mode="Markdown", reply_markup=markup)
 
-# --- BOTNI ISHGA TUSHIRISH ---
-if __name__ == '__main__':
-    # Render kutayotgan portni ochish (agar kerak bo'lsa)
-    executor.start_polling(dp, skip_updates=True)
+# 5. Запуск бота
+if __name__ == "__main__":
+    print("Бот запускается...")
+    # Удаляем вебхуки, чтобы не было конфликта 409
+    bot.remove_webhook()
+    # Запускаем бесконечный опрос
+    bot.infinity_polling(skip_updates=True)
