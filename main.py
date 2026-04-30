@@ -6,10 +6,10 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
-# --- SOZLAMALAR ---
-# Render'dagi Environment Variables bo'limiga ADMIN_ID ni qo'shishni unutmang!
+# Render sozlamalaridan olingan ma'lumotlar
 API_TOKEN = os.getenv('BOT_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
+# O'zingizning Telegram ID raqamingizni Render'da ADMIN_ID o'zgaruvchisiga yozing
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0)) 
 
 logging.basicConfig(level=logging.INFO)
@@ -24,29 +24,28 @@ def main_menu():
     keyboard.add(KeyboardButton("👤 Admin"))
     return keyboard
 
-# --- START KOMANDASI ---
+# --- START ---
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     args = message.get_args()
-    # Agar foydalanuvchi ulashilgan link orqali kelsa (start=run_123)
     if args and args.startswith('run_'):
         quiz_id = args.split('_')[1]
         await start_quiz_session(message.chat.id, quiz_id)
         return
-
     await message.answer("👋 Botga xush kelibsiz! Kerakli bo'limni tanlang:", reply_markup=main_menu())
 
-# --- MENING TESTLARIM (TUGMALAR SHU YERDA) ---
+# --- TESTLAR RO'YXATI (ULASHISH VA ADMIN NAZORATI) ---
 @dp.message_handler(lambda m: m.text == "📚 Mening testlarim")
 async def my_quizzes(message: types.Message):
     user_id = message.from_user.id
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cur = conn.cursor()
     
-    # Agar admin bo'lsa hamma testni ko'radi, aks holda faqat o'zinikini
+    # ADMIN uchun maxsus: Admin barcha testlarni ko'ra oladi va nusxalay oladi
     if user_id == ADMIN_ID:
         cur.execute("SELECT id, title FROM quiz_titles")
     else:
+        # Oddiy foydalanuvchilar faqat o'zinikini ko'radi
         cur.execute("SELECT id, title FROM quiz_titles WHERE owner_id=%s", (user_id,))
     
     rows = cur.fetchall()
@@ -54,12 +53,12 @@ async def my_quizzes(message: types.Message):
     conn.close()
 
     if not rows:
-        await message.answer("Hozircha testlar mavjud emas.")
+        await message.answer("Sizda hali testlar yo'q.")
         return
 
     bot_info = await bot.get_me()
     for q_id, title in rows:
-        # Ulashish linkini yaratish
+        # Ulashish havolasi
         share_url = f"https://t.me/share/url?url=https://t.me/{bot_info.username}?start=run_{q_id}"
         
         kb = InlineKeyboardMarkup(row_width=1)
@@ -68,13 +67,13 @@ async def my_quizzes(message: types.Message):
             InlineKeyboardButton("📤 Guruhga/Chatga ulashish", url=share_url)
         )
         
-        # Faqat admin testlarni o'chira olishi uchun shart
+        # Admin uchun qo'shimcha imkoniyat: O'chirish (Nusxalash uchun admin hamma testni ko'ra oladi)
         if user_id == ADMIN_ID:
-            kb.add(InlineKeyboardButton("🗑 O'chirish (Admin)", callback_data=f"del_{q_id}"))
+            kb.add(InlineKeyboardButton("🗑 O'chirish (Faqat Admin)", callback_data=f"del_{q_id}"))
         
         await message.answer(f"📁 <b>**{title}**</b>", reply_markup=kb)
 
-# --- TESTNI BOSHLASH VA VAQTNI CHEKLASH ---
+# --- TEST VAQTI VA YOPILISHI ---
 async def start_quiz_session(chat_id, quiz_id):
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cur = conn.cursor()
@@ -91,27 +90,19 @@ async def start_quiz_session(chat_id, quiz_id):
     for i, (q, opts_raw, corr_id) in enumerate(questions, 1):
         options = opts_raw.split('|')
         
-        poll = await bot.send_poll(
+        # open_period yordamida vaqt tugashi bilan savolni yopamiz
+        poll_msg = await bot.send_poll(
             chat_id=chat_id,
             question=f"[{i}/{total}] {q}",
             options=options,
             type='quiz',
             correct_option_id=corr_id,
             is_anonymous=False,
-            open_period=timer # VAQT TUGAGACH SAVOL YOPILADI
+            open_period=timer 
         )
-        
-        # Savol ochiq turish vaqtini kutamiz
-        await asyncio.sleep(timer)
-        
-    await bot.send_message(chat_id, "🏁 Test yakunlandi!")
+        await asyncio.sleep(timer) # Keyingi savolga o'tishdan oldin belgilangan vaqtni kutish
 
-# --- CALLBACKLAR ---
-@dp.callback_query_handler(lambda c: c.data.startswith('run_'))
-async def run_callback(callback_query: types.CallbackQuery):
-    quiz_id = callback_query.data.split('_')[1]
-    await start_quiz_session(callback_query.message.chat.id, quiz_id)
-    await callback_query.answer()
+    await bot.send_message(chat_id, "✅ Test yakunlandi! Hech kim endi javob bera olmaydi.")
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
