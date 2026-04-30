@@ -6,10 +6,10 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
-# Render sozlamalari
+# --- SOZLAMALAR ---
 API_TOKEN = os.getenv('BOT_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
-# ADMIN_ID ni Render Environment Variables bo'limiga raqamli ID sifatida yozing
+# O'zingizning Telegram ID raqamingizni Render'da ADMIN_ID deb kiriting
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0)) 
 
 logging.basicConfig(level=logging.INFO)
@@ -27,20 +27,21 @@ def main_menu():
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     args = message.get_args()
+    # Agar foydalanuvchi ulashilgan havola orqali kelsa
     if args and args.startswith('run_'):
         quiz_id = args.split('_')[1]
         await start_quiz_session(message.chat.id, quiz_id)
         return
-    await message.answer("👋 Bot tayyor! Bo'limni tanlang:", reply_markup=main_menu())
+    await message.answer("👋 Salom! Testlar botiga xush kelibsiz.", reply_markup=main_menu())
 
-# --- TESTLAR (ULASHISH VA ADMIN HUQUQLARI) ---
+# --- TESTLARNI CHIQARISH (ADMIN VA FOYDALANUVCHI UCHUN) ---
 @dp.message_handler(lambda m: m.text == "📚 Mening testlarim")
 async def my_quizzes(message: types.Message):
     user_id = message.from_user.id
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cur = conn.cursor()
     
-    # Faqat ADMIN barcha testlarni ko'ra oladi
+    # ADMIN hamma testni ko'radi, oddiy foydalanuvchi faqat o'zinikini
     if user_id == ADMIN_ID:
         cur.execute("SELECT id, title FROM quiz_titles")
     else:
@@ -54,24 +55,23 @@ async def my_quizzes(message: types.Message):
         await message.answer("Hozircha testlar yo'q.")
         return
 
-    bot_info = await bot.get_me()
+    bot_user = await bot.get_me()
     for q_id, title in rows:
-        # Chat va guruhga ulashish tugmasi uchun havola
-        share_url = f"https://t.me/share/url?url=https://t.me/{bot_info.username}?start=run_{q_id}"
+        # Ulashish havolasi: bu tugma bosilganda chatlar ro'yxati chiqadi
+        share_url = f"https://t.me/share/url?url=https://t.me/{bot_user.username}?start=run_{q_id}"
         
         kb = InlineKeyboardMarkup(row_width=1)
         kb.add(
             InlineKeyboardButton("🚀 Boshlash", callback_data=f"run_{q_id}"),
-            InlineKeyboardButton("📤 Chatga/Guruhga ulashish", url=share_url)
+            InlineKeyboardButton("📤 Guruhga/Chatga ulashish", url=share_url)
         )
         
-        # Faqat admin testlarni o'chira oladi
-        if user_id == ADMIN_ID:
-            kb.add(InlineKeyboardButton("🗑 O'chirish (Admin)", callback_data=f"del_{q_id}"))
+        # O'chirish tugmasi faqat test egasi yoki admin uchun
+        kb.add(InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{q_id}"))
         
         await message.answer(f"📁 <b>**{title}**</b>", reply_markup=kb)
 
-# --- TEST VAQTINI NAZORAT QILISH ---
+# --- TESTNI O'TKAZISH VA VAQTNI CHEKLASH ---
 async def start_quiz_session(chat_id, quiz_id):
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cur = conn.cursor()
@@ -88,7 +88,7 @@ async def start_quiz_session(chat_id, quiz_id):
     for i, (q, opts_raw, corr_id) in enumerate(questions, 1):
         options = opts_raw.split('|')
         
-        # open_period savolni belgilangan vaqtdan keyin yopadi
+        # open_period savolni vaqt tugashi bilan avtomat yopadi
         poll = await bot.send_poll(
             chat_id=chat_id,
             question=f"[{i}/{total}] {q}",
@@ -98,9 +98,17 @@ async def start_quiz_session(chat_id, quiz_id):
             is_anonymous=False,
             open_period=timer 
         )
-        await asyncio.sleep(timer) # Keyingi savolgacha kutish
+        # Savol tugashini kutamiz
+        await asyncio.sleep(timer)
 
-    await bot.send_message(chat_id, "✅ Test yakunlandi! Vaqt tugadi.")
+    await bot.send_message(chat_id, "✅ Test yakunlandi! Hech kim qayta javob bera olmaydi.")
+
+# --- CALLBACKLAR ---
+@dp.callback_query_handler(lambda c: c.data.startswith('run_'))
+async def run_callback(callback_query: types.CallbackQuery):
+    quiz_id = callback_query.data.split('_')[1]
+    await start_quiz_session(callback_query.message.chat.id, quiz_id)
+    await callback_query.answer()
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
