@@ -2,24 +2,28 @@ import os
 import telebot
 import logging
 
-# Настройка логирования, чтобы видеть ошибки в панели Render
+# 1. Настраиваем логирование, чтобы видеть подробности в панели Render
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# 2. Получаем токен из переменных окружения
 TOKEN = os.getenv('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# Твои обработчики команд (например, /start)
+# Пример простого обработчика команды /start
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "Привет! Я снова в строю.")
+def welcome(message):
+    bot.reply_to(message, "Привет! Бот успешно запущен и готов к работе.")
 
-# Блок запуска
+# 3. Основной блок запуска
 if __name__ == "__main__":
-    logging.info("Удаление старых соединений...")
-    # Это критически важно для исправления ошибки 409
-    bot.remove_webhook()
-    
-    logging.info("Бот запущен...")
-    # skip_updates=True заставит бота игнорировать сообщения, 
-    # присланные, пока он был выключен (чтобы не спамить в ответ)
-    bot.infinity_polling(skip_updates=True)
+    try:
+        logger.info("Удаление старых соединений (webhook)...")
+        # Этот шаг критически важен для исправления ошибки 409
+        bot.remove_webhook()
+        
+        logger.info("Запуск бота в режиме infinity_polling...")
+        # skip_updates=True проигнорирует сообщения, которые прислали, пока бот был выключен
+        bot.infinity_polling(skip_updates=True)
+    except Exception as e:
+        logger.error(f"Произошла ошибка при запуске: {e}")
