@@ -1,29 +1,49 @@
 import os
 import telebot
-import logging
+from telebot import types
 
-# 1. Настраиваем логирование, чтобы видеть подробности в панели Render
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# 2. Получаем токен из переменных окружения
+# Bot tokenini sozlash
 TOKEN = os.getenv('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# Пример простого обработчика команды /start
-@bot.message_handler(commands=['start'])
-def welcome(message):
-    bot.reply_to(message, "Привет! Бот успешно запущен и готов к работе.")
+@bot.message_handler(func=lambda m: m.text == "📚 Mening testlarim")
+def show_my_quizzes(message):
+    # Bu yerda bazadan ma'lumotlarni olasiz (misol uchun mock ma'lumot)
+    quizzes = [
+        {"id": 123, "title": "Kimyo testi"},
+        {"id": 124, "title": "Fizika testi"}
+    ]
+    
+    # Bot username'ini olish (havola yaratish uchun kerak)
+    bot_info = bot.get_me()
+    bot_username = bot_info.username
 
-# 3. Основной блок запуска
-if __name__ == "__main__":
-    try:
-        logger.info("Удаление старых соединений (webhook)...")
-        # Этот шаг критически важен для исправления ошибки 409
-        bot.remove_webhook()
+    for quiz in quizzes:
+        quiz_id = quiz['id']
+        title = quiz['title']
         
-        logger.info("Запуск бота в режиме infinity_polling...")
-        # skip_updates=True проигнорирует сообщения, которые прислали, пока бот был выключен
-        bot.infinity_polling(skip_updates=True)
-    except Exception as e:
-        logger.error(f"Произошла ошибка при запуске: {e}")
+        # 🔗 Ulashish uchun maxsus havola (Deep Link)
+        # Bu havola bosilganda botga /start run_123 buyrug'i boradi
+        share_url = f"https://t.me/share/url?url=https://t.me/{bot_username}?start=run_{quiz_id}&text=Do'stim, mana bu testni yechib ko'r: {title}"
+
+        markup = types.InlineKeyboardMarkup()
+        
+        # 1. Boshlash tugmasi
+        btn_start = types.InlineKeyboardButton("🚀 Boshlash", callback_data=f"run_{quiz_id}")
+        
+        # 2. ULASHISH TUGMASI (Mana shu yerda xato bo'lgan bo'lishi mumkin)
+        # Bu tugma foydalanuvchiga chat tanlash imkonini beradi
+        btn_share = types.InlineKeyboardButton("📤 Ulashish", url=share_url)
+        
+        # 3. O'chirish tugmasi
+        btn_delete = types.InlineKeyboardButton("🗑 O'chirish", callback_data=f"del_{quiz_id}")
+
+        # Tugmalarni joylashtirish
+        markup.add(btn_start, btn_share) # Bir qatorga ikkita tugma
+        markup.add(btn_delete)           # Pastki qatorga bitta tugma
+
+        bot.send_message(message.chat.id, f"📂 **{title}**", parse_mode="Markdown", reply_markup=markup)
+
+# Botni ishga tushirish
+if __name__ == "__main__":
+    bot.infinity_polling()
